@@ -14,8 +14,8 @@ class Config:
     # ─────────────────────────────────────────────
     #  🔐 CREDENTIALS (Required)
     # ─────────────────────────────────────────────
-    LINKEDIN_EMAIL: str = os.getenv("LINKEDIN_EMAIL", "ddaaveepranav@gmail.com")
-    LINKEDIN_PASSWORD: str = os.getenv("LINKEDIN_PASSWORD", "Badboy@612")
+    LINKEDIN_EMAIL: str = os.getenv("LINKEDIN_EMAIL", "your-gmail@gmail.com")
+    LINKEDIN_PASSWORD: str = os.getenv("LINKEDIN_PASSWORD", "password here")
 
     # ─────────────────────────────────────────────
     #  🖥️  BROWSER SETTINGS

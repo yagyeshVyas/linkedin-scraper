@@ -2,12 +2,13 @@
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![Playwright](https://img.shields.io/badge/Playwright-1.40+-green.svg)](https://playwright.dev/python/)
+[![Proxies](https://img.shields.io/badge/Proxies-Auto--Rotating-purple.svg)](#-proxy-support-free)
 [![License](https://img.shields.io/badge/License-Educational-orange.svg)](#-disclaimer)
 
 > **A learning project** built to practice real-world Python skills —
-> async programming, browser automation, HTML parsing, and Excel file I/O.
+> async programming, browser automation, HTML parsing, proxy rotation, and Excel file I/O.
 
-Search LinkedIn for **any job title**, at **any company**, in **any country** — and export everything to a clean Excel file with one command.
+Search LinkedIn for **any job title**, at **any company**, in **any country** — export everything to a clean Excel file with one command. Now with **free auto-rotating proxy support.**
 
 ---
 
@@ -17,7 +18,7 @@ This tool is for **educational purposes only.**
 Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/legal/user-agreement).
 - Do **not** use this for commercial purposes
 - Do **not** run this at large scale
-- Use a **secondary account** — not your main LinkedIn account
+- Use a **secondary LinkedIn account** — not your main one
 - The author is not responsible for any account restrictions or legal issues
 
 ---
@@ -30,6 +31,7 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 - [Installation](#-installation)
 - [Configuration](#-configuration)
 - [How to Run](#-how-to-run)
+- [Proxy Support](#-proxy-support-free)
 - [Output](#-output)
 - [How It Works](#-how-it-works)
 - [Troubleshooting](#-troubleshooting)
@@ -42,9 +44,10 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 - 🔍 Search LinkedIn for **any job title** — Recruiter, Engineer, Designer, CEO, anything
 - 🏢 Search across **any company list** — your own list or the full Fortune 500
 - 🌍 Filter by **country or city** using LinkedIn's location system
+- 🔄 **Auto-rotating free proxies** — fetches and tests fresh proxies every hour
 - 📊 Export results to a **formatted Excel file** with clickable LinkedIn profile links
-- ♻️ **Auto-resumes** if stopped — progress is saved after every search so you never lose data
-- 🛡️ Built-in **anti-detection** so LinkedIn doesn't block you immediately
+- ♻️ **Auto-resumes** if stopped — progress is saved after every search
+- 🛡️ Built-in **anti-detection** — stealth JS, human delays, session breaks
 
 ---
 
@@ -53,19 +56,25 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 ```
 linkedin-scraper/
 │
-├── main.py               ← START HERE — run this file
-├── linkedin_scraper.py   ← Core browser automation engine
-├── config.py             ← ALL your settings live here (edit this!)
-├── utils.py              ← Helper functions (delays, scrolling, Excel export)
-├── resume_parser.py      ← Parses and structures scraped profile data
-├── Requirements.txt      ← Python package dependencies
+├── main.py                    ← Run WITHOUT proxy (direct connection)
+├── main_proxy.py              ← Run WITH free rotating proxies ✨
 │
-├── output/               ← Created automatically when you run the scraper
-│   ├── linkedin_results.xlsx  ← Your final Excel data file
-│   ├── progress.json          ← Auto-save checkpoint for resume feature
-│   └── scraper.log            ← Full log of everything that happened
+├── linkedin_scraper.py        ← Core scraping engine
+├── linkedin_scraper_proxy.py  ← Scraping engine with proxy support
+├── proxy_manager.py           ← Free proxy fetcher, tester & rotator
 │
-└── session/              ← Browser session storage (keeps you logged in)
+├── config.py                  ← ALL your settings (edit this!)
+├── utils.py                   ← Helpers, delays, Excel export
+├── resume_parser.py           ← Parses and structures profile data
+├── Requirements.txt           ← Python dependencies
+│
+├── output/                    ← Auto-created on first run
+│   ├── linkedin_results.xlsx  ← Your exported Excel data
+│   ├── progress.json          ← Auto-save checkpoint (resume feature)
+│   ├── proxies.json           ← Cached working proxy list
+│   └── scraper.log            ← Full activity log
+│
+└── session/                   ← Browser session/cookie cache
 ```
 
 ---
@@ -73,7 +82,7 @@ linkedin-scraper/
 ## 📦 Requirements
 
 - Python **3.8 or higher**
-- A LinkedIn account (use a secondary one — not your main!)
+- A LinkedIn account (use a secondary one!)
 - Windows / macOS / Linux
 
 Check your Python version:
@@ -96,12 +105,10 @@ cd linkedin-scraper
 pip install -r Requirements.txt
 ```
 
-### Step 3 — Install the browser (Playwright needs Chromium)
+### Step 3 — Install the Playwright browser
 ```bash
 playwright install chromium
 ```
-
-That's it! Now configure it and run.
 
 ---
 
@@ -109,18 +116,16 @@ That's it! Now configure it and run.
 
 **You only ever need to edit one file: `config.py`**
 
-Open `config.py` and follow the steps inside:
-
 ---
 
 ### 🔐 Step 1 — Set Your LinkedIn Credentials
 
 ```python
-LINKEDIN_EMAIL    = "your_email@gmail.com"   # ← your LinkedIn email
-LINKEDIN_PASSWORD = "your_password"           # ← your LinkedIn password
+LINKEDIN_EMAIL    = "your_email@gmail.com"
+LINKEDIN_PASSWORD = "your_password"
 ```
 
-> 💡 **Tip:** Use environment variables to keep credentials out of your code:
+> 💡 Use environment variables to keep credentials safe:
 > ```bash
 > # Windows
 > set LINKEDIN_EMAIL=your_email@gmail.com
@@ -135,43 +140,26 @@ LINKEDIN_PASSWORD = "your_password"           # ← your LinkedIn password
 
 ### 🎯 Step 2 — Choose What Job Title to Search
 
-Edit `JOB_TITLES` in `config.py`. Just uncomment the block you want:
+Edit `JOB_TITLES` in `config.py`:
 
 ```python
 # Recruiters (default)
-JOB_TITLES = [
-    "Recruiter",
-    "Technical Recruiter",
-    "Talent Acquisition",
-]
+JOB_TITLES = ["Recruiter", "Technical Recruiter", "Talent Acquisition"]
 
 # Software Engineers
-JOB_TITLES = [
-    "Software Engineer",
-    "Backend Developer",
-    "Frontend Developer",
-]
+JOB_TITLES = ["Software Engineer", "Backend Developer", "Frontend Developer"]
 
 # Sales
-JOB_TITLES = [
-    "Account Executive",
-    "Sales Manager",
-    "VP of Sales",
-]
+JOB_TITLES = ["Account Executive", "Sales Manager", "VP of Sales"]
 
 # Data / AI
-JOB_TITLES = [
-    "Data Scientist",
-    "Machine Learning Engineer",
-    "Data Analyst",
-]
+JOB_TITLES = ["Data Scientist", "Machine Learning Engineer", "Data Analyst"]
 
-# Leadership
-JOB_TITLES = [
-    "CEO",
-    "CTO",
-    "Co-Founder",
-]
+# Leadership / C-Suite
+JOB_TITLES = ["CEO", "CTO", "Co-Founder", "Director of Engineering"]
+
+# Marketing
+JOB_TITLES = ["Marketing Manager", "CMO", "Growth Manager", "SEO Specialist"]
 ```
 
 ---
@@ -182,8 +170,6 @@ JOB_TITLES = [
 SEARCH_LOCATION_NAME = "United States"
 GEO_URN = "103644278"
 ```
-
-Common locations:
 
 | Country / City   | GEO_URN     |
 |------------------|-------------|
@@ -213,91 +199,127 @@ FILTER_KEYWORDS = []
 
 ---
 
-### 🏢 Step 5 — Choose Your Company List (in main.py)
-
-Open `main.py` and change this one line:
+### 🏢 Step 5 — Choose Company List (in main.py or main_proxy.py)
 
 ```python
-companies = TEST_COMPANIES         # ← 3 companies, good for first test run
-companies = MY_COMPANIES           # ← your own custom list
-companies = FORTUNE_500_COMPANIES  # ← full Fortune 500 list
+companies = TEST_COMPANIES         # 3 companies — good for first test
+companies = MY_COMPANIES           # your own custom list
+companies = FORTUNE_500_COMPANIES  # full Fortune 500
 ```
 
 ---
 
 ## ▶️ How to Run
 
+### Option A — Without Proxy (direct connection)
 ```bash
 python main.py
 ```
 
-The scraper will show a summary and ask you to press ENTER before starting:
+### Option B — With Free Auto-Rotating Proxies ✨ (recommended)
+```bash
+python main_proxy.py
+```
+
+The scraper shows a summary before starting:
 
 ```
 🎯 Job Titles  : Recruiter, Technical Recruiter
 🌍 Location    : United States
 🏢 Companies   : 3
-🔍 Total searches: 6
-📁 Output file : output/linkedin_results.xlsx
+🔄 Proxy Mode  : AUTO-ROTATING (refreshes every hour)
 
-Press ENTER to start, or Ctrl+C to cancel...
+Press ENTER to start...
 ```
 
-> **First time?** Change `companies = TEST_COMPANIES` in `main.py` to test with just 3 companies before running the full list.
+> **First time?** Always start with `TEST_COMPANIES` (3 companies) to make sure everything works before running the full list.
 
 ---
 
-### ♻️ Resume After a Crash
+### ♻️ Resume After a Stop
 
-If the scraper stops for any reason — just run it again:
+If the scraper stops for any reason — just run the same command again:
 
 ```bash
-python main.py
+python main_proxy.py
 ```
 
-It reads `output/progress.json` and continues exactly where it left off.
+It reads `output/progress.json` and continues exactly where it left off. No data is lost.
+
+---
+
+## 🔄 Proxy Support (Free)
+
+`proxy_manager.py` handles everything automatically:
+
+### How It Works
+
+| When | What Happens |
+|------|-------------|
+| **On startup** | Fetches 100+ free proxies, tests them, keeps working ones |
+| **Every hour** | Fetches a completely fresh proxy list automatically |
+| **Every 15 requests** | Rotates to the next proxy in the list |
+| **Every 45 requests** | Rotates proxy AND relaunches the browser fresh |
+| **On network error** | Immediately switches to a new proxy |
+| **Proxy list runs out** | Auto-fetches a brand new list instantly |
+
+### Free Proxy Sources Used
+
+| Source | Refresh Rate |
+|--------|-------------|
+| [ProxyScrape](https://proxyscrape.com) | Every few minutes |
+| [GeoNode](https://geonode.com/free-proxy-list) | Hourly |
+| [Proxy-List.download](https://www.proxy-list.download) | Daily |
+| [ProxyNova](https://proxynova.com) | Hourly |
+
+### Proxy Reality Check
+
+Free proxies are not perfect — expect:
+- ~10–30% of fetched proxies will actually work
+- Some will be slow (3–8 second response times)
+- `proxy_manager.py` automatically tests and removes bad proxies
 
 ---
 
 ## 📊 Output
 
-Results are saved to `output/linkedin_results.xlsx` with two sheets:
+Results saved to `output/linkedin_results.xlsx` with two sheets:
 
-**Sheet 1 — Recruiters (all data)**
+**Sheet 1 — All Profiles**
 
 | Column | Description |
 |--------|-------------|
 | Full Name | Person's full name |
 | Job Title | Their current title |
 | Company (from Profile) | Company listed on their LinkedIn |
-| Searched Company | Company name you searched |
-| Searched Title | Job title you searched |
+| Searched Company | Company name you searched for |
+| Searched Title | Job title you searched for |
 | LinkedIn Headline | Their full LinkedIn headline |
 | Location | City, State |
-| Email Address | If publicly visible on their profile |
-| Phone | If publicly visible on their profile |
-| LinkedIn URL | Clickable link directly to their profile |
+| Email Address | If publicly visible |
+| Phone | If publicly visible |
+| Proxy Used | Which proxy was used (or "direct") |
+| LinkedIn URL | 🔗 Clickable link to their profile |
 | Scraped At | Date and time scraped |
 
 **Sheet 2 — Summary**
 
-A quick summary showing total profiles found, companies covered, and how many had emails.
+Quick stats: total profiles, companies covered, profiles with email.
 
 ---
 
 ## 🛡️ How It Works (Anti-Detection)
 
-LinkedIn actively detects bots. This scraper uses several techniques to behave like a real human:
-
 | Technique | What It Does |
 |-----------|-------------|
-| **Random delays** | Waits 8–18 seconds between each profile (not a fixed speed) |
-| **Session breaks** | Takes a 1–3 minute break every 15 requests, scrolls the feed naturally |
+| **Random delays** | Waits 8–18 seconds between profiles (not fixed) |
+| **Session breaks** | 1–3 min break every 15 requests, scrolls feed naturally |
+| **Proxy rotation** | Different IP address every 15–45 requests |
 | **Stealth JS** | Hides signs that a browser is being automated |
-| **User agent rotation** | Pretends to be different real browsers (Chrome, Safari) |
-| **Human-like typing** | Types your login credentials one character at a time |
-| **Random scrolling** | Scrolls pages up and down like a real person reading |
-| **US Geolocation** | Sets browser location to New York to appear local |
+| **User agent rotation** | Rotates between real Chrome and Safari agents |
+| **Human-like typing** | Types credentials one character at a time |
+| **Random scrolling** | Scrolls pages up and down like a real person |
+| **NYC Geolocation** | Sets browser location to New York |
 
 > ⚠️ **Do NOT reduce the delay settings.** Faster = higher chance of getting blocked.
 
@@ -305,36 +327,39 @@ LinkedIn actively detects bots. This scraper uses several techniques to behave l
 
 ## 🔧 Troubleshooting
 
-**❌ Login timeout error**
+**❌ Login timeout**
 ```
 Login error: Timeout 15000ms exceeded
 ```
-→ Your internet may be slow. The scraper uses `domcontentloaded` which should handle this — try running again.
+→ Run again. LinkedIn can be slow to load sometimes.
 
 ---
 
-**❌ "No results found" for every company**
+**❌ No results for every company**
 
-→ LinkedIn may have temporarily rate-limited your IP.
-→ Wait 1–2 hours and try again, or restart your router to get a new IP.
-
----
-
-**⚠️ Verification / CAPTCHA screen appears**
-
-→ Normal! The scraper pauses for **60 seconds** and shows the browser window.
-→ Complete the verification manually, then the scraper continues automatically.
+→ LinkedIn may have rate-limited your IP.
+→ Switch to proxy mode: `python main_proxy.py`
+→ Or wait 1–2 hours and try again.
 
 ---
 
-**❌ "Please set your LinkedIn credentials"**
+**⚠️ Verification / CAPTCHA screen**
 
-→ Open `config.py` and update `LINKEDIN_EMAIL` and `LINKEDIN_PASSWORD`.
+→ Normal! The scraper pauses for 60 seconds.
+→ Complete the verification manually in the browser window.
+→ The scraper continues automatically after you finish.
+
+---
+
+**❌ All proxies failing**
+
+→ Free proxies sometimes go down all at once.
+→ The scraper will fall back to direct connection automatically.
+→ Try again after 30 minutes — new proxies will be available.
 
 ---
 
 **❌ ModuleNotFoundError**
-
 ```bash
 pip install -r Requirements.txt
 playwright install chromium
@@ -344,21 +369,21 @@ playwright install chromium
 
 **❌ 0 results every time**
 
-→ LinkedIn may have changed their HTML structure. This is common with scrapers.
-→ Open an [Issue](https://github.com/yagyeshVyas/linkedin-scraper/issues) and I'll look into it.
+→ LinkedIn may have updated their HTML structure.
+→ Open an [Issue](https://github.com/yagyeshVyas/linkedin-scraper/issues) and I'll investigate.
 
 ---
 
 ## ⏱️ Time Estimates
 
-| Companies | Job Titles | Est. Time |
-|-----------|-----------|-----------|
-| 3 (test) | 2 | ~10–20 min |
-| 50 | 2 | ~2–5 hours |
-| 100 | 3 | ~5–15 hours |
-| 500 | 5 | ~25–70 hours |
+| Companies | Job Titles | Mode | Est. Time |
+|-----------|-----------|------|-----------|
+| 3 (test) | 2 | Any | ~10–20 min |
+| 50 | 2 | Direct | ~2–5 hours |
+| 50 | 2 | Proxy | ~3–7 hours |
+| 500 | 5 | Proxy | ~25–70 hours |
 
-> Run it overnight for large lists. The resume feature means you can split it across multiple sessions.
+> Run overnight for large lists. The resume feature means you can split it across multiple sessions.
 
 ---
 
@@ -368,9 +393,10 @@ playwright install chromium
 |---------|---------|---------|
 | [Playwright](https://playwright.dev/python/) | 1.40+ | Browser automation |
 | [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/) | 4.12+ | HTML parsing |
-| [Pandas](https://pandas.pydata.org/) | 2.0+ | Data processing |
-| [OpenPyXL](https://openpyxl.readthedocs.io/) | 3.1+ | Excel file creation |
+| [Pandas](https://pandas.pydata.org/) | 2.0+ | Data handling |
+| [OpenPyXL](https://openpyxl.readthedocs.io/) | 3.1+ | Excel export |
 | asyncio | built-in | Async execution |
+| urllib | built-in | Proxy fetching |
 
 ---
 
@@ -388,8 +414,8 @@ Found a bug or want to improve something?
 
 ## ⭐ Support
 
-If this project helped you, consider giving it a star on GitHub — it helps others find it!
+If this helped you, consider giving it a star — it helps others find it!
 
 ---
 
-*Built as a learning project. Practicing Python, Playwright, asyncio, and real-world problem solving.*
+*Built as a learning project. Practicing Python, Playwright, asyncio, proxy rotation, and real-world problem solving.*

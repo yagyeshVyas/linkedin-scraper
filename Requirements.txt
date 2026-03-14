@@ -2,8 +2,10 @@
 # Install with: pip install -r requirements.txt
 # Then run: playwright install chromium
 
-playwright>=1.40.0
-beautifulsoup4>=4.12.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-lxml>=4.9.0
+playwright==1.49.0
+beautifulsoup4==4.12.3
+pandas==2.2.3
+openpyxl==3.1.5
+lxml==5.3.0
+PyPDF2==3.0.1
+python-docx==1.1.2

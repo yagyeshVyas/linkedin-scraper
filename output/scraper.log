@@ -235,3 +235,26 @@
 2026-03-01 16:06:32 [INFO]    Total recruiters found: 82
 2026-03-01 16:06:32 [INFO]    Failed URLs: 0
 2026-03-01 16:06:32 [INFO]    Companies completed: 1/300
+2026-03-14 16:42:20 [INFO] =================================================================
+2026-03-14 16:42:20 [INFO]   LinkedIn Scraper v3.0 — Mode: CANDIDATES
+2026-03-14 16:42:20 [INFO]   Location   : United States
+2026-03-14 16:42:20 [INFO] =================================================================
+2026-03-14 16:42:20 [INFO] 📂 Resumed progress: 46 existing records, 1 companies done
+2026-03-14 16:42:20 [INFO] 🚀 Launching stealth browser...
+2026-03-14 16:42:25 [INFO] 🕵️  Spoofing UA: Mozilla/5.0 (X11; Linux x86_64) AppleWeb...
+2026-03-14 16:42:28 [INFO] ✅ Browser launched successfully.
+2026-03-14 16:42:28 [INFO] 🔐 Attempting LinkedIn login...
+2026-03-14 16:42:51 [INFO]    Post-login URL: https://www.linkedin.com/checkpoint/challenge/AgERNzxQoGPFmwAAAZzuFhp6dPBsfOO0WTt6P-eURETtWrQZCG1dlo-TbgwKrElaIMv-fTVjg8qsktT4Ow-gTa-BtSEHuA?ut=09Tpxa6-Wq1Yc1
+2026-03-14 16:42:51 [WARNING] ⚠️  Verification required! Complete it in the browser window.
+2026-03-14 16:42:51 [WARNING]     You have 60 seconds...
+2026-03-14 16:43:51 [ERROR] ❌ Login failed. URL: https://www.linkedin.com/checkpoint/challenge/AgHaXqZsbHEAdgAAAZzuFqju1MikmXgQ7MPwYNw0SNLZni9k9al0dFL3drgGSzVAPmQIhp2sfpCwYtmdeGDHbkSFy13spA?ut=24FvZjJJ-r1Yc1
+2026-03-14 16:43:51 [ERROR]    Double-check LINKEDIN_EMAIL and LINKEDIN_PASSWORD in config.py
+2026-03-14 16:43:51 [ERROR] ❌ Login failed. Exiting.
+2026-03-14 16:43:51 [INFO] ✅ Candidates Excel file saved: output/linkedin_candidates.xlsx
+2026-03-14 16:43:51 [INFO] 
+🎉 Exported 46 records → output/linkedin_candidates.xlsx
+2026-03-14 16:43:52 [INFO] 
+📊 Final Summary:
+2026-03-14 16:43:52 [INFO]    Records saved   : 46
+2026-03-14 16:43:52 [INFO]    Failed URLs     : 0
+2026-03-14 16:43:52 [INFO]    Searches done   : 0 page loads

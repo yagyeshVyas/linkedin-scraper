@@ -84,7 +84,7 @@ def setup_logging(log_file: str = "scraper.log"):
 
 
 # ─────────────────────────────────────────────
-#  EXCEL EXPORT (Beautiful formatting)
+#  EXCEL EXPORT (PEOPLE)
 # ─────────────────────────────────────────────
 
 def export_to_excel(results: list, output_path: str) -> str:
@@ -227,4 +227,173 @@ def export_to_excel(results: list, output_path: str) -> str:
 
     wb.save(output_path)
     logger.info(f"✅ Excel file saved: {output_path}")
+    return output_path
+
+
+# ─────────────────────────────────────────────
+#  EXCEL EXPORT (JOBS)
+# ─────────────────────────────────────────────
+
+def export_jobs_to_excel(results: list, output_path: str) -> str:
+    """Export job listings to Excel."""
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(results)
+
+    columns_order = ["title", "company", "location", "url", "search_keyword", "scraped_at"]
+    columns_order = [c for c in columns_order if c in df.columns]
+    df = df[columns_order]
+
+    column_names = {
+        "title": "Job Title",
+        "company": "Company",
+        "location": "Location",
+        "url": "Job Link",
+        "search_keyword": "Searched Keyword",
+        "scraped_at": "Scraped At"
+    }
+    df = df.rename(columns=column_names)
+
+    df.to_excel(output_path, index=False, sheet_name="Jobs")
+
+    wb = load_workbook(output_path)
+    ws = wb.active
+
+    # Formatting styling
+    HEADER_BG = "0A66C2"
+    HEADER_FG = "FFFFFF"
+    ROW_ALT   = "EBF3FB"
+    ROW_NORM  = "FFFFFF"
+    BORDER_CLR = "CCCCCC"
+
+    thin_border = Border(
+        left=Side(style="thin", color=BORDER_CLR), right=Side(style="thin", color=BORDER_CLR),
+        top=Side(style="thin", color=BORDER_CLR), bottom=Side(style="thin", color=BORDER_CLR)
+    )
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color=HEADER_FG, size=11, name="Calibri")
+        cell.fill = PatternFill("solid", fgColor=HEADER_BG)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin_border
+    ws.row_dimensions[1].height = 32
+
+    # Make URLs clickable
+    url_col_idx = None
+    for idx, cell in enumerate(ws[1], 1):
+        if cell.value == "Job Link":
+            url_col_idx = idx
+            break
+
+    for row_num, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), 2):
+        fill_color = ROW_ALT if row_num % 2 == 0 else ROW_NORM
+        for col_idx, cell in enumerate(row, 1):
+            cell.fill = PatternFill("solid", fgColor=fill_color)
+            cell.alignment = Alignment(vertical="center", wrap_text=False)
+            cell.border = thin_border
+            cell.font = Font(size=10, name="Calibri")
+
+            if url_col_idx and col_idx == url_col_idx and cell.value:
+                url = str(cell.value)
+                cell.hyperlink = url
+                cell.font = Font(size=10, color="0563C1", underline="single", name="Calibri")
+
+        ws.row_dimensions[row_num].height = 22
+
+    # Column widths
+    widths = {"Job Title": 45, "Company": 30, "Location": 25, "Job Link": 55, "Searched Keyword": 25, "Scraped At": 18}
+    for idx, cell in enumerate(ws[1], 1):
+        ws.column_dimensions[get_column_letter(idx)].width = widths.get(cell.value, 20)
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    wb.save(output_path)
+    logger.info(f"✅ Jobs Excel file saved: {output_path}")
+    return output_path
+
+
+# ─────────────────────────────────────────────
+#  EXCEL EXPORT (CANDIDATES)
+# ─────────────────────────────────────────────
+
+def export_candidates_to_excel(results: list, output_path: str) -> str:
+    """Export candidate data to Excel."""
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(results)
+
+    columns_order = [
+        "name", "title", "company", "headline", "location", 
+        "search_skill", "email", "phone", "connections", 
+        "linkedin_url", "scraped_at"
+    ]
+    columns_order = [c for c in columns_order if c in df.columns]
+    df = df[columns_order]
+
+    column_names = {
+        "name": "Candidate Name", "title": "Current Title", "company": "Current Company",
+        "headline": "LinkedIn Headline", "location": "Location", "search_skill": "Matched Skill",
+        "email": "Email Address", "phone": "Phone", "connections": "Connections",
+        "linkedin_url": "Profile URL", "scraped_at": "Scraped At"
+    }
+    df = df.rename(columns=column_names)
+    df.to_excel(output_path, index=False, sheet_name="Candidates")
+
+    wb = load_workbook(output_path)
+    ws = wb.active
+
+    # Set up basic styles
+    HEADER_BG = "0A66C2"
+    HEADER_FG = "FFFFFF"
+    ROW_ALT   = "EBF3FB"
+    ROW_NORM  = "FFFFFF"
+    BORDER_CLR = "CCCCCC"
+
+    thin_border = Border(
+        left=Side(style="thin", color=BORDER_CLR), right=Side(style="thin", color=BORDER_CLR),
+        top=Side(style="thin", color=BORDER_CLR), bottom=Side(style="thin", color=BORDER_CLR)
+    )
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color=HEADER_FG, size=11, name="Calibri")
+        cell.fill = PatternFill("solid", fgColor=HEADER_BG)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin_border
+    ws.row_dimensions[1].height = 32
+
+    # Clickable URLs
+    url_col_idx = None
+    for idx, cell in enumerate(ws[1], 1):
+        if cell.value == "Profile URL":
+            url_col_idx = idx
+            break
+
+    for row_num, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), 2):
+        fill_color = ROW_ALT if row_num % 2 == 0 else ROW_NORM
+        for col_idx, cell in enumerate(row, 1):
+            cell.fill = PatternFill("solid", fgColor=fill_color)
+            cell.alignment = Alignment(vertical="center", wrap_text=False)
+            cell.border = thin_border
+            cell.font = Font(size=10, name="Calibri")
+
+            if url_col_idx and col_idx == url_col_idx and cell.value:
+                url = str(cell.value)
+                cell.hyperlink = url
+                cell.font = Font(size=10, color="0563C1", underline="single", name="Calibri")
+
+        ws.row_dimensions[row_num].height = 22
+
+    widths = {
+        "Candidate Name": 22, "Current Title": 30, "Current Company": 25, 
+        "LinkedIn Headline": 45, "Location": 25, "Matched Skill": 20, 
+        "Email Address": 28, "Phone": 18, "Connections": 15, 
+        "Profile URL": 45, "Scraped At": 18
+    }
+    for idx, cell in enumerate(ws[1], 1):
+        ws.column_dimensions[get_column_letter(idx)].width = widths.get(cell.value, 20)
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    wb.save(output_path)
+    logger.info(f"✅ Candidates Excel file saved: {output_path}")
     return output_path

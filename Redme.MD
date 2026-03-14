@@ -1,113 +1,205 @@
-# 🔵 LinkedIn Scraper v3.0
+# 🔵 LinkedIn People Scraper
 
-The ultimate LinkedIn scraper with **People**, **Job**, and **Candidate** search modes. Features advanced anti-detection including adaptive rate-limiting and user-agent rotation.
+> A learning project built to practice real-world Python skills — async programming, browser automation, HTML parsing, and file I/O.
+> 
+> ⚠️ **Disclaimer:** This tool is for educational purposes only. Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/legal/user-agreement). Use responsibly. Not intended for commercial or large-scale production use.
+
+---
+
+## ✨ What It Does
+
+- 🔍 Search LinkedIn for **any job title** (Recruiter, Engineer, Designer, CEO — anything)
+- 🏢 Filter by **any company** from a custom or Fortune 500 list
+- 🌍 Target **any country** using LinkedIn's GeoURN system
+- 📊 Export clean **Excel file** with clickable LinkedIn URLs
+- ♻️ **Auto-resumes** if stopped — never loses progress
+- 🛡️ Built-in **anti-detection** (stealth JS, human delays, session breaks)
 
 ---
 
 ## 📁 Project Structure
 
 ```
-linkedin_scraper/
+linkedin-scraper/
 │
-├── main.py               ← 🚀 RUN THIS FILE (Interactive Menu)
-├── linkedin_scraper.py   ← Scraping engine (handles anti-block logic)
-├── config.py             ← ✏️ YOUR SETTINGS (Search modes, filters, credentials)
-├── utils.py              ← Helpers & Excel exports (for jobs/people/candidates)
-├── requirements.txt      ← Dependencies
+├── main.py               ← 🚀 RUN THIS FILE
+├── linkedin_scraper.py   ← Core scraping engine
+├── config.py             ← ✏️  All your settings (edit this!)
+├── utils.py              ← Helpers, delays, Excel export
+├── resume_parser.py      ← Parses and structures profile data
+├── Requirements.txt      ← Python dependencies
 │
-├── output/               ← Auto-created
-│   ├── linkedin_results.xlsx     ← People search results
-│   ├── linkedin_jobs.xlsx        ← Job search results
-│   ├── linkedin_candidates.xlsx  ← Candidate search results
-│   ├── progress.json             ← Auto-save / resume state
-│   └── scraper.log               ← Activity log
+├── output/               ← Auto-created on first run
+│   ├── linkedin_results.xlsx  ← ✅ Your exported data
+│   ├── progress.json          ← Resume checkpoint
+│   └── scraper.log            ← Full activity log
 │
-└── session/              ← Browser session cache & cookies
+└── session/              ← Browser session/cookie cache
 ```
 
 ---
 
 ## ⚡ Quick Start
 
+### 1. Install dependencies
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt
+pip install -r Requirements.txt
 playwright install chromium
+```
 
-# 2. Add your LinkedIn credentials & set your target fields in config.py
-# (e.g., set LINKEDIN_EMAIL, LINKEDIN_PASSWORD)
+### 2. Set your credentials
+Open `config.py` and edit:
+```python
+LINKEDIN_EMAIL    = "your_email@gmail.com"
+LINKEDIN_PASSWORD = "your_password"
+```
+Or use environment variables:
+```bash
+export LINKEDIN_EMAIL="your_email@gmail.com"
+export LINKEDIN_PASSWORD="your_password"
+```
 
-# 3. Run the interactive menu
+### 3. Run
+```bash
 python main.py
 ```
 
 ---
 
-## 🔍 Search Modes
+## ✏️ How to Customize
 
-When you run `main.py`, you'll be prompted to select one of three search modes. You can configure what each mode searches for in `config.py`.
+**Everything is controlled from `config.py` — no other file needs editing.**
 
-### 1. 🏢 Search People (By Title & Company)
-Finds people with specific job titles at target companies.
-**Configure in `config.py`:**
+### 🎯 Change Job Title
 ```python
-# Lists of job titles to search for
-JOB_TITLES = [
-    "Software Engineer",
-    "Data Scientist",
-]
-```
-*(Note: Edit `main.py` directly to change the default `FORTUNE_500_COMPANIES` list to your own custom company list).*
+# Recruiters (default)
+JOB_TITLES = ["Recruiter", "Talent Acquisition", "HR Manager"]
 
-### 2. 💼 Search Jobs (By Keywords)
-Extracts live job postings from LinkedIn Job Search without visiting individual profiles (highly resistant to blocking).
-**Configure in `config.py`:**
-```python
-JOB_SEARCH_KEYWORDS = ["Python Developer", "Machine Learning"]
-JOB_EXPERIENCE_LEVEL = "2" # Entry level
-JOB_REMOTE_FILTER = "2"    # Remote
+# Engineers
+JOB_TITLES = ["Software Engineer", "Backend Developer", "DevOps Engineer"]
+
+# Sales
+JOB_TITLES = ["Account Executive", "Sales Manager", "VP of Sales"]
+
+# Data / AI
+JOB_TITLES = ["Data Scientist", "Machine Learning Engineer", "Data Analyst"]
+
+# Leadership
+JOB_TITLES = ["CEO", "CTO", "Co-Founder", "Director of Engineering"]
 ```
 
-### 3. 👤 Find Candidates (By Skills)
-Searches the LinkedIn people directory for specific skills or keywords to find candidate profiles regardless of their current company.
-**Configure in `config.py`:**
+### 🌍 Change Location
 ```python
-CANDIDATE_SKILLS = ["Python", "TensorFlow", "AWS"]
-CANDIDATE_TITLE_FILTER = "Engineer" # Optional title filter
+SEARCH_LOCATION_NAME = "United States"
+GEO_URN = "103644278"
 ```
 
-### 4. 📄 Smart Resume Job Match (With Strict Time Filters)
-Upload your personal resume and have the scraper dynamically generate highly relevant job searches, discarding any job that falls outside your exact hourly requirements.
-**How it Works:**
-1. Drop your resume in the project root folder (default name: `my_resume.pdf` or `.docx`).
-2. Run `python main.py` and hit Option 4.
-3. Enter exactly how fresh you want the jobs (e.g. `5` for 5 hours, `24` for 1 day, `48` for 2 days). The bot will natively read the job cards ("posted 3 hours ago") and instantly reject anything too old!
+| Country | GeoURN |
+|---------|--------|
+| United States | `103644278` |
+| United Kingdom | `101165590` |
+| Canada | `101174742` |
+| Australia | `101452733` |
+| India | `102713980` |
+| Germany | `101282230` |
+| France | `105015875` |
+| Singapore | `102454443` |
+
+### 🔍 Add a Seniority Filter (Optional)
+```python
+# Only save senior-level profiles
+FILTER_KEYWORDS = ["senior", "lead", "principal", "director"]
+
+# Or leave empty to get everyone
+FILTER_KEYWORDS = []
+```
+
+### 🏢 Choose Company List (in main.py)
+```python
+companies = TEST_COMPANIES        # 3 companies — good for testing
+companies = MY_COMPANIES          # your custom list
+companies = FORTUNE_500_COMPANIES # full Fortune 500
+```
 
 ---
 
-## 🛡️ Anti-Block Features
+## 📊 Excel Output
 
-LinkedIn aggressively monitors for bots. v3.0 introduces a robust anti-detection suite, configured in `config.py`:
+| Column | Description |
+|--------|-------------|
+| Full Name | Person's full name |
+| Job Title | Current job title |
+| Company (from Profile) | Company listed on their profile |
+| Searched Company | Company you searched for |
+| Searched Title | Job title you searched for |
+| LinkedIn Headline | Their LinkedIn headline |
+| Location | City, State |
+| Email Address | If publicly visible |
+| Phone | If publicly visible |
+| LinkedIn URL | 🔗 Clickable profile link |
+| Scraped At | Timestamp |
 
-- **Adaptive Throttling:** Automatically increases delays and triggers emergency brakes if it encounters consecutive Captchas or rate limits (`ADAPTIVE_THROTTLE = True`).
-- **User-Agent Rotation:** Periodically replaces its fingerprint to look like a brand new browser (`ROTATE_USER_AGENT = True`).
-- **Proxy Support:** Route traffic through proxies to mask your IP (`PROXY_LIST = ["http://user:pass@12.34.56.78:8080"]`).
-- **Randomized Behaviors:** Randomly scrolls pages, injects human-like typing delays, and randomly visits the home feed during breaks.
-- **Daily Limits:** Stops scraping when it hits `MAX_DAILY_SEARCHES` to protect your account.
+---
+
+## 🛡️ Anti-Detection Features
+
+| Feature | Description |
+|---------|-------------|
+| Human-like delays | 8–18 second random waits between profiles |
+| Session breaks | 1–3 min breaks every 15 requests |
+| Stealth JS injection | Hides browser automation signals |
+| User agent rotation | Rotates between real Chrome/Safari agents |
+| Natural scrolling | Mimics real reading behavior |
+| Human typing | Types credentials character by character |
 
 ---
 
 ## ♻️ Resume Capability
 
-If stopped or crashed — **just run the script again**. Progress is auto-saved after every query.
+If the scraper crashes or you stop it — **just run it again.**
+Progress is auto-saved to `output/progress.json` after every company/title combination.
 
 ---
 
-## 📊 Excel Output Sheets
+## 🔄 Common Use Cases
 
-Separate Microsoft Excel files are generated depending on the mode you run:
-- **`linkedin_results.xlsx`**: Detailed profiles for People search.
-- **`linkedin_jobs.xlsx`**: Job listings with Job Title, Company, Location, Date, and direct URL.
-- **`linkedin_candidates.xlsx`**: Candidates matching skills with Headline, Location, and Contact info.
+| Goal | JOB_TITLES to use |
+|------|------------------|
+| Connect with recruiters | `["Recruiter", "Talent Acquisition"]` |
+| Find hiring managers | `["Engineering Manager", "Director of Engineering"]` |
+| Find potential clients | `["VP of Marketing", "CMO", "Marketing Director"]` |
+| Find co-founders | `["CEO", "CTO", "Co-Founder"]` |
+| Research a job market | `["Software Engineer", "Backend Developer"]` |
 
-All Excel exports feature beautiful formatting, colored headers, auto-sizing columns, and clickable URLs.
+---
+
+## ⚠️ Important Notes
+
+- Use a **secondary LinkedIn account** for scraping — not your main account
+- Keep `HEADLESS = False` while learning so you can see what's happening
+- If LinkedIn shows a verification screen, you have **60 seconds** to complete it manually
+- **Don't lower the delay settings** — they protect your account from being blocked
+- First run? Use `TEST_COMPANIES` (3 companies) to make sure everything works
+
+---
+
+## 🧰 Tech Stack
+
+| Library | Purpose |
+|---------|---------|
+| [Playwright](https://playwright.dev/python/) | Browser automation |
+| [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/) | HTML parsing |
+| [Pandas](https://pandas.pydata.org/) | Data handling |
+| [OpenPyXL](https://openpyxl.readthedocs.io/) | Excel export |
+| asyncio | Async/concurrent execution |
+
+---
+
+## 📄 License
+
+This project is for **educational purposes only**.
+Not affiliated with or endorsed by LinkedIn.
+
+---
+
+*Built as a learning project to practice Python, browser automation, and async programming.*

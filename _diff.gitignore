@@ -1,0 +1,40 @@
+--- .gitignore (原始)
+Nothing should be ignored since only Python source files (.py) were added and no build artifacts, dependencies, or temporary files are present in the changes.
+
++++ .gitignore (修改后)
+```
+# Compressed files
+*.zip
+
+# Environment files
+.env
+.env.local
+*.env.*
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Editors
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+.coverage
+coverage/
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.tox/
+nox/
+```

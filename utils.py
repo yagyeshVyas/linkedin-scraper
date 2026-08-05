@@ -4,23 +4,44 @@ Utility Functions for LinkedIn Scraper
 Helper functions for delays, scrolling, file I/O, and Excel export.
 """
 
-import asyncio
+import urllib.request
 import json
-import logging
-import random
-from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
-import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.styles import (
-    PatternFill, Font, Alignment, Border, Side
-)
-from openpyxl.utils import get_column_letter
+# ... existing code ...
 
+# ─────────────────────────────────────────────
+#  NOTIFICATIONS
+# ─────────────────────────────────────────────
 
-logger = logging.getLogger(__name__)
+def send_webhook_notification(webhook_url: str, title: str, summary: dict):
+    """Send a formatted notification to Discord or Slack."""
+    if not webhook_url:
+        return
+
+    try:
+        # Discord format
+        payload = {
+            "embeds": [{
+                "title": f"🚀 {title}",
+                "color": 65442, # Blue
+                "fields": [
+                    {"name": k, "value": str(v), "inline": True} 
+                    for k, v in summary.items()
+                ],
+                "footer": {"text": "LinkedIn Scraper v4.0 Enhanced"}
+            }]
+        }
+
+        req = urllib.request.Request(
+            webhook_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req) as response:
+            pass
+        logger.info("🔔 Webhook notification sent!")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to send webhook: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -323,7 +344,7 @@ def export_candidates_to_excel(results: list, output_path: str) -> str:
 
     columns_order = [
         "name", "title", "company", "headline", "location", 
-        "search_skill", "email", "phone", "connections", 
+        "search_skill", "about", "skills", "email", "phone", "connections", 
         "linkedin_url", "scraped_at"
     ]
     columns_order = [c for c in columns_order if c in df.columns]
@@ -332,6 +353,7 @@ def export_candidates_to_excel(results: list, output_path: str) -> str:
     column_names = {
         "name": "Candidate Name", "title": "Current Title", "company": "Current Company",
         "headline": "LinkedIn Headline", "location": "Location", "search_skill": "Matched Skill",
+        "about": "About Section", "skills": "Skills",
         "email": "Email Address", "phone": "Phone", "connections": "Connections",
         "linkedin_url": "Profile URL", "scraped_at": "Scraped At"
     }

@@ -154,8 +154,8 @@ class LinkedInScraper:
     # ─────────────────────────────────────────────
 
     async def login(self) -> bool:
-        """Log in to LinkedIn with human-like behavior."""
-        logger.info("🔐 Attempting LinkedIn login...")
+        """Log in to LinkedIn with human-like behavior and session saving."""
+        logger.info(f"🔐 Attempting login for: {self.current_account['email']}")
 
         try:
             await self.page.goto(
@@ -165,23 +165,23 @@ class LinkedInScraper:
             )
             await human_delay(3, 5)
 
-            # Already logged in?
+            # Already logged in via storage state?
             if any(x in self.page.url for x in ["feed", "mynetwork", "jobs"]):
-                logger.info("✅ Already logged in.")
+                logger.info("✅ Already logged in (session restored).")
                 return True
 
             # Type email
             email_input = await self.page.wait_for_selector("#username", timeout=20000)
             await email_input.click()
             await human_delay(0.5, 1.5)
-            await self._type_like_human(email_input, self.config.LINKEDIN_EMAIL)
+            await self._type_like_human(email_input, self.current_account['email'])
             await human_delay(0.8, 1.5)
 
             # Type password
             password_input = await self.page.wait_for_selector("#password")
             await password_input.click()
             await human_delay(0.3, 0.8)
-            await self._type_like_human(password_input, self.config.LINKEDIN_PASSWORD)
+            await self._type_like_human(password_input, self.current_account['password'])
             await human_delay(0.5, 1.5)
 
             # Submit
@@ -193,6 +193,14 @@ class LinkedInScraper:
                 pass
 
             await human_delay(4, 7)
+            
+            # Save storage state immediately after login
+            if self.config.USE_PERSISTENT_SESSION:
+                session_file = Path(self.config.SESSION_DIR) / f"session_{self.current_account['email'].replace('@', '_')}.json"
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                await self.context.storage_state(path=str(session_file))
+                logger.info(f"💾 Session state saved to {session_file}")
+
             current_url = self.page.url
             logger.info(f"   Post-login URL: {current_url}")
 
@@ -593,6 +601,10 @@ class LinkedInScraper:
                 "company":        self._extract_current_company(soup),
                 "headline":       self._extract_headline(soup),
                 "location":       self._extract_location(soup),
+                "about":          self._extract_about(soup),
+                "skills":         self._extract_skills(soup),
+                "experience":     self._extract_experience(soup),
+                "education":      self._extract_education(soup),
                 "email":          self._extract_email(soup),
                 "phone":          self._extract_phone(soup),
                 "connections":    self._extract_connections(soup),
@@ -858,6 +870,17 @@ class LinkedInScraper:
                     path = export_to_excel(self.results, self.config.OUTPUT_FILE)
                     
                 logger.info(f"\n🎉 Exported {len(self.results)} records → {path}")
+                
+                # Send Webhook Notification
+                if self.config.DISCORD_WEBHOOK_URL:
+                    from utils import send_webhook_notification
+                    summary = {
+                        "Mode": mode.upper(),
+                        "Total Records": len(self.results),
+                        "Searches Done": self.daily_searches,
+                        "Output File": path
+                    }
+                    send_webhook_notification(self.config.DISCORD_WEBHOOK_URL, "Scrape Complete!", summary)
             else:
                 logger.info("\n⚠️  No results to export.")
 
@@ -870,4 +893,4 @@ class LinkedInScraper:
             logger.info(f"   Records saved   : {len(self.results)}")
             if mode != "jobs":
                 logger.info(f"   Failed URLs     : {len(self.failed_urls)}")
-            logger.info(f"   Searches done   : {self.daily_searches} page loads")
+            logger.info(f"   Searches done   : {self.daily_searches} page loads")            logger.info(f"   Searches done   : {self.daily_searches} page loads")

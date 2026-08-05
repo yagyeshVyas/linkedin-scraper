@@ -256,11 +256,18 @@ class LinkedInScraperWithProxy:
             emails = [e for e in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', text)
                       if "linkedin.com" not in e]
 
+            about_section = soup.find("section", {"id": "about"})
+            about_text = about_section.get_text(separator=" ", strip=True).replace("About", "", 1).strip() if about_section else ""
+            skills_section = soup.find("section", {"id": "skills"})
+            skills = ", ".join([s.get_text(strip=True) for s in skills_section.select(".pv-skill-category-entity__name-text, .t-16.t-black.t-bold")]) if skills_section else ""
+
             profile = {
                 "name":           get_text(["h1.text-heading-xlarge", "h1"]),
                 "title":          title_text,
                 "headline":       headline,
                 "location":       get_text([".text-body-small.inline.t-black--light.break-words"]),
+                "about":          about_text,
+                "skills":         skills,
                 "email":          emails[0] if emails else "",
                 "linkedin_url":   url,
                 "search_company": company,

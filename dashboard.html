@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LinkedIn Scraper — Project Dashboard</title>
+<style>
+  /* ─────────── design tokens ─────────── */
+  :root {
+    --bg: #0b1220;
+    --bg-soft: #0f172a;
+    --panel: #151f31;
+    --panel-2: #1a2639;
+    --line: #26334a;
+    --line-soft: #1e2a40;
+    --text: #e6edf7;
+    --muted: #8fa3bd;
+    --faint: #64748b;
+    --brand: #0a66c2;
+    --brand-2: #38bdf8;
+    --accent: #7dd3fc;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --shadow: 0 10px 30px -12px rgba(0, 0, 0, .55);
+    --radius: 14px;
+    --font: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+  }
+  [data-theme="light"] {
+    --bg: #eef2f8;
+    --bg-soft: #f8fafd;
+    --panel: #ffffff;
+    --panel-2: #f3f7fc;
+    --line: #d7e0ec;
+    --line-soft: #e6edf5;
+    --text: #1a2637;
+    --muted: #5b6b82;
+    --faint: #8b98ab;
+    --brand: #0a66c2;
+    --brand-2: #0284c7;
+    --accent: #0369a1;
+    --ok: #059669;
+    --warn: #b45309;
+    --bad: #dc2626;
+    --shadow: 0 10px 30px -14px rgba(15, 40, 80, .25);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.5;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(900px 420px at 85% -10%, rgba(10, 102, 194, .16), transparent 60%),
+      radial-gradient(700px 380px at -10% 15%, rgba(56, 189, 248, .08), transparent 55%);
+    background-attachment: fixed;
+  }
+  ::selection { background: rgba(56, 189, 248, .35); }
+
+  /* scrollbars */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2c3b56; border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: #3c4f70; border: 2px solid transparent; background-clip: content-box; }
+
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 0 20px 90px; }
+
+  /* ─────────── top bar ─────────── */
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .topbar-inner {
+    max-width: 1100px; margin: 0 auto; padding: 10px 20px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  .logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; letter-spacing: .2px; white-space: nowrap; }
+  .logo .dot {
+    width: 26px; height: 26px; border-radius: 8px; flex: none;
+    background: linear-gradient(135deg, var(--brand-2), var(--brand));
+    display: grid; place-items: center; font-size: 14px;
+    box-shadow: 0 4px 12px -4px rgba(10, 102, 194, .7);
+  }
+  .logo small { color: var(--muted); font-weight: 500; font-size: 11.5px; }
+
+  .tabs { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+  .tabbtn {
+    appearance: none; border: 1px solid transparent; cursor: pointer;
+    background: transparent; color: var(--muted);
+    font-family: var(--font); font-size: 13px; font-weight: 600;
+    padding: 7px 13px; border-radius: 999px;
+    transition: background .18s ease, color .18s ease, border-color .18s ease, transform .12s ease;
+  }
+  .tabbtn:hover { color: var(--text); background: var(--panel-2); }
+  .tabbtn:active { transform: scale(.96); }
+  .tabbtn.active {
+    color: #fff;
+    background: linear-gradient(135deg, var(--brand), #084d94);
+    box-shadow: 0 4px 14px -6px rgba(10, 102, 194, .8);
+  }
+  [data-theme="light"] .tabbtn.active { color: #fff; }
+
+  .iconbtn {
+    appearance: none; cursor: pointer;
+    background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--muted); border-radius: 10px;
+    width: 34px; height: 34px; font-size: 15px;
+    display: grid; place-items: center;
+    transition: color .18s ease, border-color .18s ease, transform .12s ease;
+  }
+  .iconbtn:hover { color: var(--text); border-color: var(--brand-2); }
+  .iconbtn:active { transform: scale(.93); }
+
+  /* ─────────── tabs / sections ─────────── */
+  .tab { display: none; padding-top: 26px; }
+  .tab.active { display: block; animation: fadeUp .3s ease both; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+  .sec-head { display: flex; align-items: center; gap: 10px; margin: 30px 0 14px; }
+  .sec-head:first-child { margin-top: 0; }
+  .sec-head .n {
+    width: 24px; height: 24px; border-radius: 7px; flex: none;
+    background: linear-gradient(135deg, var(--brand-2), var(--brand));
+    color: #fff; font-size: 12.5px; font-weight: 700;
+    display: grid; place-items: center;
+    box-shadow: 0 3px 10px -3px rgba(10, 102, 194, .7);
+  }
+  .sec-head h2 { font-size: 17px; letter-spacing: .2px; }
+  .sec-head .sub { color: var(--muted); font-size: 12.5px; font-weight: 500; }
+
+  /* ─────────── hero ─────────── */
+  .hero {
+    position: relative; overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 18px; padding: 26px 28px;
+    background: linear-gradient(120deg, #0d5fb5 0%, #0a66c2 45%, #173f8f 100%);
+    color: #fff;
+    box-shadow: var(--shadow);
+  }
+  .hero::after {
+    content: ""; position: absolute; right: -70px; top: -70px;
+    width: 260px; height: 260px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(125, 211, 252, .35), transparent 65%);
+    pointer-events: none;
+  }
+  .hero h1 { font-size: 25px; letter-spacing: .3px; display: flex; align-items: center; gap: 10px; }
+  .hero p { color: rgba(235, 244, 255, .9); margin-top: 5px; font-size: 14.5px; max-width: 640px; }
+  .badges { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; position: relative; z-index: 1; }
+  .badge {
+    background: rgba(255, 255, 255, .14);
+    border: 1px solid rgba(255, 255, 255, .28);
+    padding: 3px 11px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    backdrop-filter: blur(4px);
+  }
+  .meta-strip { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 18px; color: rgba(220, 236, 255, .85); font-size: 12.5px; position: relative; z-index: 1; }
+  .meta-strip b { color: #fff; font-weight: 600; }
+
+  /* ─────────── cards ─────────── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px 18px;
+    box-shadow: var(--shadow);
+    transition: transform .18s ease, border-color .18s ease;
+    animation: fadeUp .4s ease both;
+  }
+  .card:hover { transform: translateY(-3px); border-color: var(--brand-2); }
+  .card .ic { font-size: 19px; }
+  .card .val { font-size: 27px; font-weight: 700; margin-top: 5px; letter-spacing: .3px;
+    background: linear-gradient(90deg, var(--text), var(--brand-2));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .card .lbl { color: var(--muted); font-size: 12px; margin-top: 2px; font-weight: 500; }
+  .card:nth-child(1) { animation-delay: .02s; }
+  .card:nth-child(2) { animation-delay: .07s; }
+  .card:nth-child(3) { animation-delay: .12s; }
+  .card:nth-child(4) { animation-delay: .17s; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  @media (max-width: 820px) { .grid2 { grid-template-columns: 1fr; } }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); }
+  .box h3 { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px; }
+  .bar-row { display: flex; align-items: center; gap: 10px; font-size: 13px; margin-bottom: 9px; }
+  .bar-row > span { flex: 0 0 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .bar-row b { flex: 0 0 26px; text-align: right; color: var(--brand-2); font-variant-numeric: tabular-nums; }
+  .bar { flex: 1; background: var(--bg-soft); border-radius: 999px; height: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--brand), var(--brand-2)); border-radius: 999px; transition: width .9s cubic-bezier(.25, .8, .3, 1); }
+  .bar-fill.alt { background: linear-gradient(90deg, var(--brand-2), #22d3ee); }
+
+  /* ─────────── profiles table ─────────── */
+  .toolbar { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .searchbox { position: relative; flex: 1; min-width: 240px; }
+  .searchbox svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  .searchbox input {
+    width: 100%;
+    background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    border-radius: 11px; padding: 10px 12px 10px 38px; font-size: 13.5px; font-family: var(--font);
+    outline: none; transition: border-color .18s ease, box-shadow .18s ease;
+  }
+  .searchbox input::placeholder { color: var(--faint); }
+  .searchbox input:focus { border-color: var(--brand-2); box-shadow: 0 0 0 3px rgba(56, 189, 248, .18); }
+  .count-chip {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+    border-radius: 999px; padding: 6px 13px; font-size: 12.5px; font-weight: 600; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .clear-btn {
+    appearance: none; cursor: pointer; background: transparent; border: 1px solid var(--line);
+    color: var(--muted); border-radius: 999px; padding: 6px 13px; font-size: 12.5px; font-weight: 600;
+    font-family: var(--font); transition: color .15s, border-color .15s;
+  }
+  .clear-btn:hover:not(:disabled) { color: var(--bad); border-color: var(--bad); }
+  .clear-btn:disabled { opacity: .35; cursor: default; }
+
+  .table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: auto; box-shadow: var(--shadow); max-height: 62vh; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 860px; }
+  thead th {
+    position: sticky; top: 0; z-index: 2;
+    text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .7px;
+    padding: 11px 12px; background: var(--panel-2); border-bottom: 1px solid var(--line); white-space: nowrap;
+    user-select: none;
+  }
+  thead th.sortable { cursor: pointer; transition: color .15s; }
+  thead th.sortable:hover { color: var(--text); }
+  thead th .arrow { display: inline-block; width: 12px; margin-left: 4px; color: var(--brand-2); font-size: 10px; }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tbody tr { transition: background .12s ease; }
+  tbody tr:hover { background: var(--panel-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  td.name a { color: var(--brand-2); text-decoration: none; font-weight: 600; }
+  [data-theme="light"] td.name a { color: var(--brand); }
+  td.name a:hover { text-decoration: underline; }
+  td.headline { color: var(--muted); max-width: 300px; }
+  td.time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tag { background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--accent); border-radius: 6px; padding: 1px 8px; font-size: 11.5px; font-weight: 600; }
+  mark { background: rgba(251, 191, 36, .4); color: inherit; border-radius: 3px; padding: 0 1px; }
+  .empty { padding: 34px; text-align: center; color: var(--faint); font-size: 13.5px; }
+
+  /* ─────────── activity log ─────────── */
+  .chips { display: flex; gap: 7px; margin-bottom: 12px; flex-wrap: wrap; }
+  .chip {
+    appearance: none; cursor: pointer; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--muted); font-family: var(--font);
+    font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 999px;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .chip:hover { color: var(--text); }
+  .chip.active { background: var(--brand); border-color: var(--brand); color: #fff; }
+  [data-theme="light"] .chip.active { color: #fff; }
+  .log { background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; font-family: var(--mono); font-size: 12px; line-height: 1.6; overflow: auto; max-height: 58vh; }
+  .logline { white-space: pre; color: var(--muted); }
+  .logline .ts { color: var(--faint); }
+  .logline.info { color: var(--text); }
+  .logline.warn { color: var(--warn); }
+  .logline.err { color: var(--bad); }
+
+  /* ─────────── health ─────────── */
+  .pill { border-radius: 999px; padding: 2px 11px; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+  .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill.bad { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+  .detail { color: var(--muted); font-size: 11.5px; max-width: 560px; font-family: var(--mono); word-break: break-word; }
+  code { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: var(--mono); }
+  .issues li { margin-bottom: 10px; color: var(--muted); list-style: none; padding-left: 20px; position: relative; }
+  .issues li::before { content: "•"; position: absolute; left: 6px; color: var(--brand-2); font-weight: 700; }
+  .issues b { color: var(--warn); font-weight: 700; }
+  ul.list { margin-left: 2px; }
+  ul.list li { margin-bottom: 9px; color: var(--muted); list-style: none; padding-left: 20px; position: relative; }
+  ul.list li::before { content: "→"; position: absolute; left: 2px; color: var(--brand-2); font-weight: 700; }
+  ul.list b { color: var(--text); }
+
+  /* ─────────── misc ─────────── */
+  .foot { margin-top: 44px; color: var(--faint); font-size: 12px; text-align: center; line-height: 1.7; }
+  .totop {
+    position: fixed; right: 22px; bottom: 22px; z-index: 60;
+    width: 42px; height: 42px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text); cursor: pointer; font-size: 17px;
+    box-shadow: var(--shadow); opacity: 0; pointer-events: none; transform: translateY(8px);
+    transition: opacity .2s ease, transform .2s ease;
+  }
+  .totop.show { opacity: 1; pointer-events: auto; transform: none; }
+  .totop:hover { border-color: var(--brand-2); }
+
+  .kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; font-size: 11px; font-family: var(--mono); color: var(--muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="logo"><span class="dot">🔵</span> LinkedIn Scraper <small>· project dashboard</small></div>
+    <nav class="tabs" id="tabs">
+      <button class="tabbtn active" data-tab="overview">📊 Overview</button>
+      <button class="tabbtn" data-tab="profiles">👤 Profiles</button>
+      <button class="tabbtn" data-tab="activity">🧾 Activity</button>
+      <button class="tabbtn" data-tab="health">🩺 Health</button>
+      <button class="tabbtn" data-tab="config">⚙️ Config</button>
+    </nav>
+    <button class="iconbtn" id="themeBtn" title="Toggle theme" aria-label="Toggle light/dark theme">🌙</button>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- ═══════════ OVERVIEW ═══════════ -->
+  <section class="tab active" id="tab-overview">
+    <header class="hero">
+      <h1>🔵 LinkedIn People Scraper</h1>
+      <p>Educational Python project — search LinkedIn for people, jobs &amp; candidates, and export to styled Excel files.</p>
+      <div class="badges">
+        <span class="badge">Python 3.11</span>
+        <span class="badge">Playwright</span>
+        <span class="badge">BeautifulSoup</span>
+        <span class="badge">pandas + openpyxl</span>
+        <span class="badge">Auto-rotating proxies</span>
+        <span class="badge">rich CLI</span>
+      </div>
+      <div class="meta-strip" id="metaStrip"></div>
+    </header>
+
+    <div class="sec-head"><span class="n">1</span><h2>Scraped Data</h2><span class="sub">live from <code>output/progress.json</code></span></div>
+    <div class="cards" id="statCards"></div>
+
+    <div class="grid2">
+      <div class="box"><h3>Profiles by company</h3><div id="barsCompanies"></div></div>
+      <div class="box"><h3>Profiles by location</h3><div id="barsLocations"></div></div>
+    </div>
+  </section>
+
+  <!-- ═══════════ PROFILES ═══════════ -->
+  <section class="tab" id="tab-profiles">
+    <div class="sec-head"><span class="n">2</span><h2>Profiles</h2><span class="sub" id="profilesSub"></span></div>
+    <div class="toolbar">
+      <div class="searchbox">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+        <input id="search" type="search" placeholder="Search name, title, company, location, email…" autocomplete="off" aria-label="Search profiles">
+      </div>
+      <span class="count-chip" id="countChip"></span>
+      <button class="clear-btn" id="clearBtn" disabled>✕ Clear</button>
+      <button class="clear-btn" id="csvBtn" disabled>⬇ CSV</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="sortable" data-key="name">Name<span class="arrow"></span></th>
+            <th class="sortable" data-key="title">Title<span class="arrow"></span></th>
+            <th class="sortable" data-key="search_company">Searched<span class="arrow"></span></th>
+            <th class="sortable" data-key="headline">Headline<span class="arrow"></span></th>
+            <th class="sortable" data-key="location">Location<span class="arrow"></span></th>
+            <th class="sortable" data-key="email">Email<span class="arrow"></span></th>
+            <th class="sortable" data-key="scraped_at">Scraped<span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="foot" style="margin-top:14px">💡 Tip: click a column header to sort · press <span class="kbd">/</span> to jump to search · <span class="kbd">⬇ CSV</span> exports the filtered view</p>
+  </section>
+
+  <!-- ═══════════ ACTIVITY ═══════════ -->
+  <section class="tab" id="tab-activity">
+    <div class="sec-head"><span class="n">3</span><h2>Recent Activity</h2><span class="sub">last 40 lines of <code>output/scraper.log</code></span></div>
+    <div class="chips" id="logChips">
+      <button class="chip active" data-level="">All</button>
+      <button class="chip" data-level="INFO">INFO</button>
+      <button class="chip" data-level="WARNING">⚠ WARNING</button>
+      <button class="chip" data-level="ERROR">⛔ ERROR</button>
+    </div>
+    <div class="log" id="log"></div>
+  </section>
+
+  <!-- ═══════════ HEALTH ═══════════ -->
+  <section class="tab" id="tab-health">
+    <div class="sec-head"><span class="n">4</span><h2>Project Health</h2><span class="sub">live syntax check of every module</span></div>
+    <div class="box" style="overflow:auto"><table style="min-width:640px">
+      <thead><tr><th>Module</th><th>Syntax check</th><th>Detail</th></tr></thead>
+      <tbody id="healthRows"></tbody>
+    </table></div>
+    <div class="sec-head"><span class="n">5</span><h2>Known Issues</h2><span class="sub">pre-existing state of the Python modules</span></div>
+    <div class="box issues"><ul class="list">
+      <li><b>config.py</b> — duplicate <code>USER_AGENTS</code> block pasted after the first list closing → <code>IndentationError</code>; nothing imports.</li>
+      <li><b>linkedin_scraper.py</b> — duplicated <code>logger.info(...)</code> final-summary line → <code>SyntaxError</code> (~line 896).</li>
+      <li><b>utils.py</b> — imports stripped to <code>urllib.request</code>/<code>json</code> with a <code># ... existing code ...</code> placeholder; functions reference <code>logger</code>, <code>pd</code>, openpyxl etc. that are never imported → <code>NameError</code> at runtime.</li>
+      <li><b>linkedin_scraper.py</b> — <code>login()</code> uses <code>self.current_account</code> (never set) and <code>config.DISCORD_WEBHOOK_URL</code> (not defined).</li>
+      <li><b>Security</b> — hardcoded LinkedIn credentials remain as defaults in <code>config.py</code>; rotate them and switch to env vars.</li>
+      <li><b>*_diff.py files</b> — saved patch files for a never-merged "v4.0 Enhanced" line — not runnable modules.</li>
+    </ul></div>
+  </section>
+
+  <!-- ═══════════ CONFIG ═══════════ -->
+  <section class="tab" id="tab-config">
+    <div class="sec-head"><span class="n">6</span><h2>Config Snapshot</h2><span class="sub">credentials intentionally omitted</span></div>
+    <div class="box"><ul class="list" id="configList"></ul></div>
+  </section>
+
+  <footer class="foot">
+    Generated <span id="genAt"></span> by <code>generate_dashboard.py</code> · Educational project — scraping LinkedIn may violate their ToS.
+  </footer>
+</div>
+
+<button class="totop" id="totop" title="Back to top" aria-label="Back to top">↑</button>
+
+<script>
+"use strict";
+/* ═══════════ DATA (filled in by generate_dashboard.py) ═══════════ */
+const RECORDS = [{"name": "Sydney Golub", "headline": "Corporate Recruiting at Walmart", "location": "", "company": "", "title": "Corporate Recruiting", "linkedin_url": "https://www.linkedin.com/in/sydneygolub", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:15:28", "search_company": "Walmart"}, {"name": "J Bedi Singh", "headline": "Recruiter at Walmart", "location": "Los Angeles, California, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/bedi-749a8121a", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:15:54", "search_company": "Walmart"}, {"name": "Zovain Varatn", "headline": "Technical Recruiter at Walmart", "location": "New York, New York, United States", "company": "", "title": "Technical Recruiter", "linkedin_url": "https://www.linkedin.com/in/zovain-varatn-715a5b1b3", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:16:43", "search_company": "Walmart"}, {"name": "Eston Dodson", "headline": "Senior Human Resources Recruiter at Walmart", "location": "", "company": "", "title": "Senior Human Resources Recruiter", "linkedin_url": "https://www.linkedin.com/in/eston-dodson-7154503b4", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:17:06", "search_company": "Walmart"}, {"name": "Katrina Henrie", "headline": "Senior Recruiter, Talent Aquistion at Walmart - Marketing", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Recruiter, Talent Aquistion", "linkedin_url": "https://www.linkedin.com/in/katrina-henrie-a68b1941", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:17:27", "search_company": "Walmart"}, {"name": "Carrie Meier", "headline": "Sr. Talent Acquisition Partner- Walmart Health and Wellness- Seeking pharmacists who provide exceptional care for all", "location": "", "company": "", "title": "Sr. Talent Acquisition Partner- Walmart Health and Wellness- Seeking pharmacists who provide exceptional care for all", "linkedin_url": "https://www.linkedin.com/in/carrie-meier", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:17:52", "search_company": "Walmart"}, {"name": "Fiona McGrath", "headline": "Recruiter at walmart.com", "location": "San Francisco, California, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/fiona-mcgrath-56bb091", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:18:12", "search_company": "Walmart"}, {"name": "Savanah Leach", "headline": "Senior Recruiter - Walmart Facility Services", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Recruiter - Walmart Facility Services", "linkedin_url": "https://www.linkedin.com/in/savanah-leach-311841215", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:18:30", "search_company": "Walmart"}, {"name": "Kenneth Burke II", "headline": "Pharmacy Campus Recruiter, Walmart Health & Wellness", "location": "Charlotte, North Carolina, United States", "company": "", "title": "Pharmacy Campus Recruiter, Walmart Health & Wellness", "linkedin_url": "https://www.linkedin.com/in/kenneth-burke-ii-078714125", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:18:58", "search_company": "Walmart"}, {"name": "Kat Ferreira", "headline": "Senior Talent Partner at Walmart", "location": "", "company": "", "title": "Senior Talent Partner", "linkedin_url": "https://www.linkedin.com/in/kat-ferreira-a90b7257", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:22:12", "search_company": "Walmart"}, {"name": "Carlos Porras", "headline": "WalMart Recruiting", "location": "El Paso, Texas, United States", "company": "", "title": "WalMart Recruiting", "linkedin_url": "https://www.linkedin.com/in/carlos-porras-66335246", "email": "carlos.porras@prudential.com", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:22:33", "search_company": "Walmart"}, {"name": "Patrick Charles", "headline": "Recruiter | Technical Recruiter | IT Recruiter | Talent Acquisition Specialist |", "location": "", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/patrick-charles-4b0490238", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:22:56", "search_company": "Walmart"}, {"name": "Mark Jackson", "headline": "Senior Recruiter at Walmart Supply Chain", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Recruiter", "linkedin_url": "https://www.linkedin.com/in/mark-jackson-22b48017b", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:23:57", "search_company": "Walmart"}, {"name": "Kelly Abraham", "headline": "Technical Executive Recruiter at Walmart Global Tech", "location": "", "company": "", "title": "Technical Executive Recruiter", "linkedin_url": "https://www.linkedin.com/in/kellyabraham77", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:24:21", "search_company": "Walmart"}, {"name": "Tina S.", "headline": "Recruiter at Walmart", "location": "Perris, California, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/tina-s-5a9b431b3", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:24:45", "search_company": "Walmart"}, {"name": "Christina Caples-Kelley", "headline": "Recruiter at Walmart", "location": "Tomball, Texas, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/christina-caples-kelley-9b25392b", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:25:07", "search_company": "Walmart"}, {"name": "Megan Hussinger", "headline": "Corporate Recruiting for Walmart Marketplace, International, Health & Wellness, and E2E", "location": "", "company": "", "title": "Corporate Recruiting for Walmart Marketplace, International, Health & Wellness, and E2E", "linkedin_url": "https://www.linkedin.com/in/meganhussinger", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:25:27", "search_company": "Walmart"}, {"name": "Renz Dela Cruz", "headline": "Senior Recruiter at Walmart--Save Money, Live Better.", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Recruiter", "linkedin_url": "https://www.linkedin.com/in/renz-dela-cruz-b229ba102", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:25:49", "search_company": "Walmart"}, {"name": "Jordan Bartolomew", "headline": "Recruiter at Walmart", "location": "", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/jordan-bartolomew-208773176", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:26:17", "search_company": "Walmart"}, {"name": "Smita Mantha", "headline": "Senior Talent Acquisition Partner at Walmart Global Tech", "location": "Woodbridge, Virginia, United States", "company": "", "title": "Senior Talent Acquisition Partner", "linkedin_url": "https://www.linkedin.com/in/smita-mantha", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:26:39", "search_company": "Walmart"}, {"name": "Rob Rossi", "headline": "Senior Talent Acquisition Partner at Walmart", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Talent Acquisition Partner", "linkedin_url": "https://www.linkedin.com/in/rob-rossi-9100a9154", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:27:04", "search_company": "Walmart"}, {"name": "Aaron D.", "headline": "Walmart Corporate Recruiter", "location": "Santa Clarita, California, United States", "company": "", "title": "Walmart Corporate Recruiter", "linkedin_url": "https://www.linkedin.com/in/aaron-d-8b40013a", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:27:29", "search_company": "Walmart"}, {"name": "Kate B.", "headline": "Recruiter at Walmart eCommerce", "location": "Seattle, Washington, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/kate-b-1837071a9", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:27:58", "search_company": "Walmart"}, {"name": "Doug Nore", "headline": "Retired - Optometrist Recruiter for WalMart/SAM'S USA", "location": "Lincoln, Nebraska, United States", "company": "", "title": "Retired - Optometrist Recruiter for WalMart/SAM'S USA", "linkedin_url": "https://www.linkedin.com/in/doug-nore-1492334", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:31:02", "search_company": "Walmart"}, {"name": "Cristy Pearson", "headline": "Recruiter at Walmart", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/cristypearson", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:31:26", "search_company": "Walmart"}, {"name": "Michael Aguilar", "headline": "Senior Talent Acquisition Partner at Walmart Global Tech", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Talent Acquisition Partner", "linkedin_url": "https://www.linkedin.com/in/michael-aguilar-36032a95", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:31:51", "search_company": "Walmart"}, {"name": "Tyler Filippello", "headline": "Professional Recruiter @ Walmart Global Tech | IT Strategy, Recruiting @ Intellisource", "location": "Wichita, Kansas, United States", "company": "", "title": "Professional Recruiter @ Walmart Global Tech", "linkedin_url": "https://www.linkedin.com/in/tyler-filippello-17900931b", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:32:15", "search_company": "Walmart"}, {"name": "Jamie Cockerham", "headline": "Director, Global Talent Acquisition at Walmart", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Director, Global Talent Acquisition", "linkedin_url": "https://www.linkedin.com/in/jamie-cockerham-5a936522", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:32:37", "search_company": "Walmart"}, {"name": "Kellie Walker", "headline": "Recruiter at Walmart", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/kellie-walker-199b8528", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:33:01", "search_company": "Walmart"}, {"name": "Shannon Kinsella", "headline": "HR at Walmart", "location": "Kendallville, Indiana, United States", "company": "", "title": "HR", "linkedin_url": "https://www.linkedin.com/in/shannon-kinsella-24b632216", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:33:29", "search_company": "Walmart"}, {"name": "Steve Wilson", "headline": "Recruiter at Walmart", "location": "Seattle, Washington, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/steve-wilson-4b2006334", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:33:51", "search_company": "Walmart"}, {"name": "Ashley Woods Weller", "headline": "Senior Director Human Resources at Walmart", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Director Human Resources", "linkedin_url": "https://www.linkedin.com/in/ashleyewoods", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:34:17", "search_company": "Walmart"}, {"name": "Sam Carpenter", "headline": "Senior Talent Acquisition Partner at Walmart", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Talent Acquisition Partner", "linkedin_url": "https://www.linkedin.com/in/sam-carpenter-67b774b0", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:34:45", "search_company": "Walmart"}, {"name": "Briana George", "headline": "Recruiter at Walmart", "location": "McNeal, Arizona, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/briana-george-69717b236", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:35:07", "search_company": "Walmart"}, {"name": "Stephan Addington", "headline": "Recruiter at Walmart", "location": "Indianapolis, Indiana, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/stephanaddington", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:35:31", "search_company": "Walmart"}, {"name": "Lena Huong Le", "headline": "Senior Talent Acquisition Partner at Walmart", "location": "Vancouver, Washington, United States", "company": "", "title": "Senior Talent Acquisition Partner", "linkedin_url": "https://www.linkedin.com/in/lenahuongle", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:35:54", "search_company": "Walmart"}, {"name": "Larry Waller, TSC, CSP", "headline": "Manager Recruiter at Walmart", "location": "Springdale, Arkansas, United States", "company": "", "title": "Manager Recruiter", "linkedin_url": "https://www.linkedin.com/in/larry-waller-tsc-csp-1118249", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:36:21", "search_company": "Walmart"}, {"name": "Jenna (Mosketti) Yapps", "headline": "Recruiter at Walmart", "location": "", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/jennamosketti", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:36:48", "search_company": "Walmart"}, {"name": "Lindsey Tanner", "headline": "Recruiter", "location": "Denver, Colorado, United States", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/lindsey-tanner", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:38:17", "search_company": "Walmart"}, {"name": "Ray Bruce", "headline": "Recruiter at Walmart eCommerce", "location": "", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/ray-bruce-054a64176", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:38:43", "search_company": "Walmart"}, {"name": "Melanie Rippl", "headline": "Senior Talent Acquisition Partner at Walmart US", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Talent Acquisition Partner", "linkedin_url": "https://www.linkedin.com/in/melanierippl", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:39:11", "search_company": "Walmart"}, {"name": "Kelsey Jandrey", "headline": "Recruiter", "location": "", "company": "", "title": "Recruiter", "linkedin_url": "https://www.linkedin.com/in/kelsey-jandrey-794217122", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:40:02", "search_company": "Walmart"}, {"name": "Madison Edwards", "headline": "Senior Talent Acquisition Partner | Driving Hiring for Walmart’s Growth Organization | Former Amazon & Agency Recruiter", "location": "Bentonville, Arkansas, United States", "company": "", "title": "Senior Talent Acquisition Partner", "linkedin_url": "https://www.linkedin.com/in/madisontayloredwards", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:40:43", "search_company": "Walmart"}, {"name": "Myles Muretta", "headline": "Senior Staff Recruiter @ Walmart - Vizio", "location": "Arvada, Colorado, United States", "company": "", "title": "Senior Staff Recruiter @ Walmart - Vizio", "linkedin_url": "https://www.linkedin.com/in/myles-muretta-05a31852", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:41:06", "search_company": "Walmart"}, {"name": "Karen Keathley", "headline": "Senior Recruiter at Walmart Global eCommerce - Currently hiring for Data Analytic, Supply Chain", "location": "Pleasanton, California, United States", "company": "", "title": "Senior Recruiter", "linkedin_url": "https://www.linkedin.com/in/karen-keathley-1a4288122", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:41:23", "search_company": "Walmart"}, {"name": "Jeni West", "headline": "Senior Technical Recruiter @ Walmart Global Tech", "location": "Flagstaff, Arizona, United States", "company": "", "title": "Senior Technical Recruiter @ Walmart Global Tech", "linkedin_url": "https://www.linkedin.com/in/jeniwest", "email": "", "phone": "1697045572", "connections": "", "scraped_at": "2026-03-01 15:41:42", "search_company": "Walmart"}];
+const LOG_RAW = "2026-03-01 16:04:02 [INFO]    [41/51] Scraping profile...\n2026-03-01 16:04:23 [INFO]    [42/51] Scraping profile...\n2026-03-01 16:04:35 [INFO]    ✅ Scraped: Will Jameson | Senior Executive Recruiter | \n2026-03-01 16:04:46 [INFO]    [43/51] Scraping profile...\n2026-03-01 16:04:54 [INFO]    ✅ Scraped: Sunnia N. | Technical Recruiter @ Amazon 👩🏻‍💻 | \n2026-03-01 16:05:06 [INFO]    [44/51] Scraping profile...\n2026-03-01 16:05:15 [INFO]    ✅ Scraped: Neethi B. | Talent Acquisition @ Amazon | \n2026-03-01 16:05:24 [INFO]    [45/51] Scraping profile...\n2026-03-01 16:05:35 [INFO]    ✅ Scraped: Matt Iorio | Recruiter with Amazon Talent Acquisition | \n2026-03-01 16:05:44 [INFO] ☕ Taking a 104s session break to avoid detection...\n2026-03-01 16:06:31 [INFO] ✅ Excel file saved: output/linkedin_recruiters.xlsx\n2026-03-01 16:06:31 [INFO] \n🎉 Done! Exported 82 recruiters to: output/linkedin_recruiters.xlsx\n2026-03-01 16:06:32 [INFO] 📊 Summary:\n2026-03-01 16:06:32 [INFO]    Total recruiters found: 82\n2026-03-01 16:06:32 [INFO]    Failed URLs: 0\n2026-03-01 16:06:32 [INFO]    Companies completed: 1/300\n2026-03-14 16:42:20 [INFO] =================================================================\n2026-03-14 16:42:20 [INFO]   LinkedIn Scraper v3.0 — Mode: CANDIDATES\n2026-03-14 16:42:20 [INFO]   Location   : United States\n2026-03-14 16:42:20 [INFO] =================================================================\n2026-03-14 16:42:20 [INFO] 📂 Resumed progress: 46 existing records, 1 companies done\n2026-03-14 16:42:20 [INFO] 🚀 Launching stealth browser...\n2026-03-14 16:42:25 [INFO] 🕵️  Spoofing UA: Mozilla/5.0 (X11; Linux x86_64) AppleWeb...\n2026-03-14 16:42:28 [INFO] ✅ Browser launched successfully.\n2026-03-14 16:42:28 [INFO] 🔐 Attempting LinkedIn login...\n2026-03-14 16:42:51 [INFO]    Post-login URL: https://www.linkedin.com/checkpoint/challenge/AgERNzxQoGPFmwAAAZzuFhp6dPBsfOO0WTt6P-eURETtWrQZCG1dlo-TbgwKrElaIMv-fTVjg8qsktT4Ow-gTa-BtSEHuA?ut=09Tpxa6-Wq1Yc1\n2026-03-14 16:42:51 [WARNING] ⚠️  Verification required! Complete it in the browser window.\n2026-03-14 16:42:51 [WARNING]     You have 60 seconds...\n2026-03-14 16:43:51 [ERROR] ❌ Login failed. URL: https://www.linkedin.com/checkpoint/challenge/AgHaXqZsbHEAdgAAAZzuFqju1MikmXgQ7MPwYNw0SNLZni9k9al0dFL3drgGSzVAPmQIhp2sfpCwYtmdeGDHbkSFy13spA?ut=24FvZjJJ-r1Yc1\n2026-03-14 16:43:51 [ERROR]    Double-check LINKEDIN_EMAIL and LINKEDIN_PASSWORD in config.py\n2026-03-14 16:43:51 [ERROR] ❌ Login failed. Exiting.\n2026-03-14 16:43:51 [INFO] ✅ Candidates Excel file saved: output/linkedin_candidates.xlsx\n2026-03-14 16:43:51 [INFO] \n🎉 Exported 46 records → output/linkedin_candidates.xlsx\n2026-03-14 16:43:52 [INFO] \n📊 Final Summary:\n2026-03-14 16:43:52 [INFO]    Records saved   : 46\n2026-03-14 16:43:52 [INFO]    Failed URLs     : 0\n2026-03-14 16:43:52 [INFO]    Searches done   : 0 page loads";
+const HEALTH  = [{"file": "config.py", "ok": false, "detail": "IndentationError: unexpected indent (config.py, line 262)"}, {"file": "main.py", "ok": true, "detail": ""}, {"file": "main_proxy.py", "ok": true, "detail": ""}, {"file": "linkedin_scraper.py", "ok": false, "detail": "SyntaxError: invalid syntax (linkedin_scraper.py, line 896)"}, {"file": "linkedin_scraper_proxy.py", "ok": true, "detail": ""}, {"file": "proxy_manager.py", "ok": true, "detail": ""}, {"file": "utils.py", "ok": true, "detail": ""}, {"file": "resume_parser.py", "ok": true, "detail": ""}];
+const CFG     = {"job_titles": "Recruiter, Technical Recruiter, Talent Acquisition, HR Manager, People Operations", "location": "United States", "geo": "103644278"};
+const GEN_AT  = "2026-08-10 19:56:02";
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ═══════════ THEME ═══════════ */
+const themeBtn = $("#themeBtn");
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  themeBtn.textContent = t === "dark" ? "🌙" : "☀️";
+  try { localStorage.setItem("dash-theme", t); } catch (e) {}
+}
+themeBtn.addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+let saved = null; try { saved = localStorage.getItem("dash-theme"); } catch (e) {}
+applyTheme(saved === "light" ? "light" : "dark");
+
+/* ═══════════ TABS ═══════════ */
+function showTab(name) {
+  $$(".tab").forEach(s => s.classList.toggle("active", s.id === "tab-" + name));
+  $$(".tabbtn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  if (name === "overview") animateOverview();
+  if (name === "profiles") $("#search").focus({ preventScroll: true });
+}
+$$(".tabbtn").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+
+/* ═══════════ OVERVIEW ═══════════ */
+function countUp(el, target) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { el.textContent = target.toLocaleString(); return; }
+  const t0 = performance.now(), dur = 850;
+  (function tick(t) {
+    const p = Math.min((t - t0) / dur, 1), eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(target * eased).toLocaleString();
+    if (p < 1) requestAnimationFrame(tick);
+  })(t0);
+}
+let overviewAnimated = false;
+function animateOverview() {
+  if (overviewAnimated) return;
+  overviewAnimated = true;
+  $$("#statCards .val").forEach(el => countUp(el, +el.dataset.target));
+  $$(".bar-fill").forEach(el => requestAnimationFrame(() => requestAnimationFrame(() => { el.style.width = el.dataset.w + "%"; })));
+}
+
+/* ═══════════ PROFILES ═══════════ */
+let query = "", sortKey = "name", sortDir = 1, viewRows = [];
+const profilesSub = $("#profilesSub"), countChip = $("#countChip"), clearBtn = $("#clearBtn"), csvBtn = $("#csvBtn");
+
+function buildStats() {
+  const withEmail = RECORDS.filter(r => r.email).length;
+  const comps = {}, locs = {};
+  RECORDS.forEach(r => {
+    const c = r.search_company || "Unknown", l = (r.location || "").split(",")[0].trim() || "Unknown";
+    comps[c] = (comps[c] || 0) + 1; locs[l] = (locs[l] || 0) + 1;
+  });
+  const times = RECORDS.map(r => r.scraped_at).filter(Boolean).sort();
+  const stats = {
+    total: RECORDS.length, withEmail,
+    companies: Object.keys(comps).length, locations: Object.keys(locs).length,
+    first: times[0] || "-", last: times[times.length - 1] || "-",
+    comps, locs
+  };
+  $("#metaStrip").innerHTML =
+    `<span>📍 <b>${esc(stats.companies)}</b> company · <b>${esc(stats.locations)}</b> locations</span>` +
+    `<span>🗓️ first scrape <b>${esc(stats.first.slice(0, 10))}</b></span>` +
+    `<span>🕓 latest <b>${esc(stats.last.slice(0, 10))}</b></span>`;
+  const cards = [
+    ["👤", stats.total, "profiles scraped"],
+    ["✉️", stats.withEmail, "with email found"],
+    ["🏢", stats.companies, "companies covered"],
+    ["📌", stats.locations, "unique locations"],
+  ].map(([ic, v, l], i) =>
+    `<div class="card"><div class="ic">${ic}</div><div class="val" data-target="${v}">0</div><div class="lbl">${l}</div></div>`);
+  $("#statCards").innerHTML = cards.join("");
+
+  const bars = (data, alt) => Object.entries(data).sort((a, b) => b[1] - a[1]).slice(0, 7)
+    .map(([k, v]) => {
+      const w = Math.max(3, Math.round(v / Math.max(stats.total, 1) * 100));
+      return `<div class="bar-row"><span title="${esc(k)}">${esc(k)}</span><div class="bar"><div class="bar-fill${alt ? " alt" : ""}" data-w="${w}"></div></div><b>${v}</b></div>`;
+    }).join("");
+  $("#barsCompanies").innerHTML = bars(stats.comps) || '<p style="color:var(--faint);font-size:12.5px">No records yet.</p>';
+  $("#barsLocations").innerHTML = bars(stats.locs, true) || '<p style="color:var(--faint);font-size:12.5px">No records yet.</p>';
+}
+
+function highlight(text) {
+  const t = esc(text);
+  if (!query) return t;
+  const q = esc(query).toLowerCase();
+  if (!q) return t;
+  const lower = t.toLowerCase();
+  let out = "", i = 0;
+  while (true) {
+    const idx = lower.indexOf(q, i);
+    if (idx === -1) { out += t.slice(i); break; }
+    out += t.slice(i, idx) + "<mark>" + t.slice(idx, idx + q.length) + "</mark>";
+    i = idx + q.length;
+  }
+  return out;
+}
+
+function renderProfiles() {
+  const q = query.toLowerCase();
+  const rows = RECORDS
+    .filter(r => !q || [r.name, r.title, r.search_company, r.headline, r.location, r.email].some(v => (v || "").toLowerCase().includes(q)))
+    .sort((a, b) => {
+      const av = (a[sortKey] || "").toLowerCase(), bv = (b[sortKey] || "").toLowerCase();
+      return av.localeCompare(bv) * sortDir || (a.name || "").localeCompare(b.name || "");
+    });
+  viewRows = rows;
+  profilesSub.textContent = `${RECORDS.length} rows · sorted by ${sortKey} ${sortDir === 1 ? "▲" : "▼"}`;
+  countChip.textContent = `${rows.length} / ${RECORDS.length}`;
+  clearBtn.disabled = !q;
+  csvBtn.disabled = !rows.length;
+  if (!rows.length) {
+    $("#rows").innerHTML = `<tr><td colspan="7"><div class="empty">No profiles match “${esc(q)}”</div></td></tr>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  rows.forEach(r => {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="name"><a href="${esc(r.url)}" target="_blank" rel="noopener">${highlight(r.name || "—")}</a></td>` +
+      `<td>${highlight(r.title || "—")}</td>` +
+      `<td><span class="tag">${highlight(r.search_company || "—")}</span></td>` +
+      `<td class="headline">${highlight((r.headline || "—").slice(0, 140))}</td>` +
+      `<td>${highlight(r.location || "—")}</td>` +
+      `<td>${highlight(r.email || "—")}</td>` +
+      `<td class="time">${esc(r.scraped_at || "—")}</td>`;
+    frag.appendChild(tr);
+  });
+  $("#rows").replaceChildren(frag);
+}
+
+let debounceT;
+$("#search").addEventListener("input", e => {
+  clearTimeout(debounceT);
+  debounceT = setTimeout(() => { query = e.target.value.trim(); renderProfiles(); }, 120);
+});
+clearBtn.addEventListener("click", () => { $("#search").value = ""; query = ""; renderProfiles(); $("#search").focus(); });
+
+/* Export the currently filtered+sorted view as CSV (client-side, no server). */
+function buildCsv(rows) {
+  const headers = ["Name", "Title", "Searched", "Headline", "Location", "Email", "LinkedIn URL", "Scraped At"];
+  const q = s => '"' + String(s ?? "").replace(/"/g, '""') + '"';
+  const body = rows.map(r => [r.name, r.title, r.search_company, r.headline, r.location, r.email, r.url, r.scraped_at]);
+  return [headers, ...body].map(row => row.map(q).join(",")).join("\r\n");
+}
+csvBtn.addEventListener("click", () => {
+  const csv = buildCsv(viewRows);
+  const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "linkedin_profiles.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$$("th.sortable").forEach(th => th.addEventListener("click", () => {
+  const k = th.dataset.key;
+  if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = 1; }
+  $$("th.sortable").forEach(h => h.querySelector(".arrow").textContent = h.dataset.key === k ? (sortDir === 1 ? "▲" : "▼") : "");
+  renderProfiles();
+}));
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#search").focus(); }
+});
+
+/* ═══════════ ACTIVITY ═══════════ */
+const levelMap = { INFO: "info", WARNING: "warn", ERROR: "err" };
+let logLevel = "";
+function renderLog() {
+  const frag = document.createDocumentFragment();
+  LOG_RAW.split("\n").forEach(line => {
+    const m = line.match(/\[(INFO|WARNING|ERROR)\]/);
+    if (logLevel && (!m || m[1] !== logLevel)) return;
+    const div = document.createElement("div");
+    div.className = "logline " + (m ? levelMap[m[1]] : "");
+    if (/^\S+ \S+ /.test(line)) {
+      const i = line.indexOf("]");
+      div.innerHTML = `<span class="ts">${esc(line.slice(0, i + 1))}</span>${esc(line.slice(i + 1))}`;
+    } else div.textContent = line;
+    frag.appendChild(div);
+  });
+  $("#log").replaceChildren(frag);
+}
+$$("#logChips .chip").forEach(c => c.addEventListener("click", () => {
+  $$("#logChips .chip").forEach(x => x.classList.remove("active"));
+  c.classList.add("active");
+  logLevel = c.dataset.level;
+  renderLog();
+}));
+
+/* ═══════════ HEALTH ═══════════ */
+function renderHealth() {
+  const rows = HEALTH.map(h => {
+    const pill = h.ok ? '<span class="pill ok">✓ compiles</span>' : '<span class="pill bad">✗ broken</span>';
+    const detail = h.detail ? `<div class="detail">${esc(h.detail)}</div>` : "";
+    return `<tr><td><code>${esc(h.file)}</code></td><td>${pill}</td><td>${detail}</td></tr>`;
+  }).join("");
+  $("#healthRows").innerHTML = rows;
+}
+
+/* ═══════════ CONFIG ═══════════ */
+function renderConfig() {
+  const items = [
+    ["Mode", "people / jobs / candidates — chosen in the CLI menu (main.py)"],
+    ["Job titles", esc(CFG.job_titles || "—")],
+    ["Location", esc((CFG.location || "—") + (CFG.geo ? ` (GEO_URN ${CFG.geo})` : ""))],
+    ["Output", "<code>output/linkedin_results.xlsx</code> · <code>linkedin_jobs.xlsx</code> · <code>linkedin_candidates.xlsx</code>"],
+    ["Resume match", "<code>resume_parser.py</code> extracts top-5 tech keywords from a PDF/DOCX to drive job searches"],
+    ["Anti-detection", "random delays, session breaks, stealth JS, UA rotation, adaptive throttle, NYC geolocation"],
+  ];
+  $("#configList").innerHTML = items.map(([k, v]) => `<li><b>${esc(k)}:</b> ${v}</li>`).join("");
+  $("#genAt").textContent = GEN_AT;
+}
+
+/* ═══════════ BACK TO TOP ═══════════ */
+const totop = $("#totop");
+window.addEventListener("scroll", () => totop.classList.toggle("show", scrollY > 500), { passive: true });
+totop.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+
+/* ═══════════ INIT ═══════════ */
+buildStats();
+renderProfiles();
+renderLog();
+renderHealth();
+renderConfig();
+animateOverview();
+</script>
+</body>
+</html>

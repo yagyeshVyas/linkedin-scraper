@@ -8,7 +8,7 @@
 > **A learning project** built to practice real-world Python skills —
 > async programming, browser automation, HTML parsing, proxy rotation, and Excel file I/O.
 
-Search LinkedIn for **any job title**, at **any company**, in **any country** — export everything to a clean Excel file with one command. Now with **free auto-rotating proxy support.**
+Search LinkedIn for **any job title**, at **any company**, in **any country** — export everything to a clean Excel file with one command. Now with **free auto-rotating proxy support**, a **`--dry-run` smoke mode**, and a **live dashboard** that shows your session health (login state, ban risk, daily search cap) in real time.
 
 ---
 
@@ -33,6 +33,7 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 - [How to Run](#-how-to-run)
 - [Proxy Support](#-proxy-support-free)
 - [Output](#-output)
+- [Live Dashboard & Session Health](#-live-dashboard--session-health)
 - [How It Works](#-how-it-works)
 - [Troubleshooting](#-troubleshooting)
 - [Tech Stack](#-tech-stack)
@@ -46,8 +47,11 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 - 🌍 Filter by **country or city** using LinkedIn's location system
 - 🔄 **Auto-rotating free proxies** — fetches and tests fresh proxies every hour
 - 📊 Export results to a **formatted Excel file** with clickable LinkedIn profile links
-- ♻️ **Auto-resumes** if stopped — progress is saved after every search
-- 🛡️ Built-in **anti-detection** — stealth JS, human delays, session breaks
+- ♻️ **Auto-resumes** if stopped — progress is saved after every search, duplicate profiles are skipped
+- 🛡️ Built-in **anti-detection** — stealth JS, human delays, session breaks, exponential backoff
+- 🔑 **Smart login** — restores your saved session, retries with backoff, polls through 2FA/checkpoints
+- 🧪 **`--dry-run`** — boots the browser, logs in, verifies one search, saves nothing
+- 📈 **Live session health** — ban-risk score, error streaks, and daily search cap on the dashboard
 
 ---
 
@@ -56,23 +60,32 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 ```
 linkedin-scraper/
 │
-├── main.py                    ← Run WITHOUT proxy (direct connection)
-├── main_proxy.py              ← Run WITH free rotating proxies ✨
+├── main.py                    ← Main entry (menu + --dry-run CLI mode)
+├── main_proxy.py              ← Alt engine with free proxy rotation
 │
-├── linkedin_scraper.py        ← Core scraping engine
+├── linkedin_scraper.py        ← Core scraping engine (login, proxy rotation,
+│                                anti-block, live session telemetry)
 ├── linkedin_scraper_proxy.py  ← Scraping engine with proxy support
 ├── proxy_manager.py           ← Free proxy fetcher, tester & rotator
 │
 ├── config.py                  ← ALL your settings (edit this!)
-├── utils.py                   ← Helpers, delays, Excel export
+├── utils.py                   ← Helpers, delays, Excel export, telemetry store
 ├── resume_parser.py           ← Parses and structures profile data
 ├── Requirements.txt           ← Python dependencies
+│
+├── dashboard_template.html    ← Dashboard UI source of truth
+├── generate_dashboard.py      ← Builds dashboard.html from output/ (stdlib only)
+├── dashboard.html             ← Generated live dashboard (open in a browser)
+│
+├── test_scraper_fixes.py      ← Behavioral tests (no browser needed)
+├── test_login_flow.py         ← Drives the real login() against fakes
 │
 ├── output/                    ← Auto-created on first run
 │   ├── linkedin_results.xlsx  ← Your exported Excel data
 │   ├── progress.json          ← Auto-save checkpoint (resume feature)
 │   ├── proxies.json           ← Cached working proxy list
-│   └── scraper.log            ← Full activity log
+│   ├── scraper.log            ← Full activity log
+│   └── session_health.json    ← Live session telemetry (dashboard panel)
 │
 └── session/                   ← Browser session/cookie cache
 ```
@@ -104,6 +117,13 @@ cd linkedin-scraper
 ```bash
 pip install -r Requirements.txt
 ```
+
+> Prefer a project virtual environment (recommended):
+> ```bash
+> python -m venv .venv
+> .venv/Scripts/python.exe -m pip install -r Requirements.txt   # Windows
+> source .venv/bin/activate && pip install -r Requirements.txt  # Mac / Linux
+> ```
 
 ### Step 3 — Install the Playwright browser
 ```bash
@@ -199,13 +219,42 @@ FILTER_KEYWORDS = []
 
 ---
 
-### 🏢 Step 5 — Choose Company List (in main.py or main_proxy.py)
+### 🏢 Step 5 — Choose Company List
+
+The scraper uses `FORTUNE_500_COMPANIES` (25 companies) by default. For a quick first run set:
 
 ```python
-companies = TEST_COMPANIES         # 3 companies — good for first test
-companies = MY_COMPANIES           # your own custom list
-companies = FORTUNE_500_COMPANIES  # full Fortune 500
+USE_TEST_COMPANIES = True  # runs the 2-company TEST_COMPANIES list instead
 ```
+
+You can also edit the `TEST_COMPANIES` / `FORTUNE_500_COMPANIES` lists in `main.py`.
+
+---
+
+### 🆕 Step 6 — New Settings Worth Knowing
+
+**Proxies** (either `PROXY_LIST` with your own proxies, or free auto-fetch):
+
+```python
+PROXY_LIST = []            # e.g. ["http://user:pass@proxy1:8080", ...] — round-robin rotated
+USE_FREE_PROXIES = False   # True → auto-fetch + test free proxies when PROXY_LIST is empty
+```
+
+**Safety / resilience:**
+
+```python
+RETRY_FAILED_PROFILES = True      # one final pass over transiently-failed profiles before export
+LOGIN_CHALLENGE_TIMEOUT_SECONDS = 90  # how long to poll 2FA/checkpoint pages (no blind waits)
+```
+
+**Notifications:**
+
+```python
+DISCORD_WEBHOOK_URL = ""  # optional — posts a summary when a scrape completes
+```
+
+**Telemetry output:** `output/session_health.json` is written automatically (login reason, proxy used,
+error streaks, daily search count, ban-risk score). No setup needed.
 
 ---
 
@@ -216,23 +265,29 @@ companies = FORTUNE_500_COMPANIES  # full Fortune 500
 python main.py
 ```
 
-### Option B — With Free Auto-Rotating Proxies ✨ (recommended)
+### Option B — With Free Auto-Rotating Proxies ✨
+
+Set `USE_FREE_PROXIES = True` in `config.py`, then run normally:
+
 ```bash
-python main_proxy.py
+python main.py
 ```
 
-The scraper shows a summary before starting:
+The scraper fetches + tests free proxies on launch (cached to `output/proxies.json` for an hour),
+rotates through them, and sheds dead ones automatically. You can also use the dedicated proxy
+engine (`python main_proxy.py`) if you prefer the separate path.
 
+### Option C — Smoke Test Everything First (recommended)
+
+```bash
+python main.py --dry-run            # people mode, one search
+python main.py --dry-run --mode jobs       # job search
+python main.py --dry-run --mode candidates # candidate search
 ```
-🎯 Job Titles  : Recruiter, Technical Recruiter
-🌍 Location    : United States
-🏢 Companies   : 3
-🔄 Proxy Mode  : AUTO-ROTATING (refreshes every hour)
 
-Press ENTER to start...
-```
-
-> **First time?** Always start with `TEST_COMPANIES` (3 companies) to make sure everything works before running the full list.
+Boots the browser, logs in, verifies **one** search page, then stops. Scrapes nothing and
+writes nothing — a safe end-to-end check that your credentials, session, and search URLs work.
+Exit code `0` = all good.
 
 ---
 
@@ -241,26 +296,31 @@ Press ENTER to start...
 If the scraper stops for any reason — just run the same command again:
 
 ```bash
-python main_proxy.py
+python main.py
 ```
 
-It reads `output/progress.json` and continues exactly where it left off. No data is lost.
+It reads `output/progress.json` and continues exactly where it left off. No data is lost — and
+profiles already captured are never re-scraped.
 
 ---
 
 ## 🔄 Proxy Support (Free)
 
-`proxy_manager.py` handles everything automatically:
+Two ways to use proxies — both feed the same round-robin rotation:
+
+- **Your own proxies** — set `PROXY_LIST` in `config.py`. Rotation never picks the same proxy
+twice in a row, so every identity rotation actually changes your IP.
+- **Free proxies** — set `USE_FREE_PROXIES = True`; `proxy_manager.py` fetches, tests, caches,
+and rotates free proxies for you (also the engine behind `main_proxy.py`).
 
 ### How It Works
 
 | When | What Happens |
 |------|-------------|
 | **On startup** | Fetches 100+ free proxies, tests them, keeps working ones |
-| **Every hour** | Fetches a completely fresh proxy list automatically |
-| **Every 15 requests** | Rotates to the next proxy in the list |
-| **Every 45 requests** | Rotates proxy AND relaunches the browser fresh |
-| **On network error** | Immediately switches to a new proxy |
+| **Every hour** | Fetches a completely fresh proxy list automatically (or loads the cache) |
+| **Every identity rotation** | Picks the next proxy — never the same IP twice in a row |
+| **On consecutive errors** | Marks the current proxy failed, sheds it, and rotates |
 | **Proxy list runs out** | Auto-fetches a brand new list instantly |
 
 ### Free Proxy Sources Used
@@ -308,13 +368,38 @@ Quick stats: total profiles, companies covered, profiles with email.
 
 ---
 
+## 📈 Live Dashboard & Session Health
+
+Regenerate the self-contained dashboard any time (stdlib only, no install):
+
+```bash
+python generate_dashboard.py
+```
+
+Then open `dashboard.html` in any browser. It shows:
+
+- 📊 Overview stats + searchable/sortable profile table (with CSV export)
+- 📈 Analytics — title keywords, US states, seniority, email coverage
+- 🧾 Colorized activity feed (last 40 log lines, filterable by level)
+- 🩺 Project health — live syntax check of every module, plus known issues
+- ❤️ **Session Health** — login reason, proxy used, error streaks, daily search
+  cap gauge, a **0–100 ban-risk score**, and a live event timeline. While a
+  scrape is running the panel shows a pulsing **LIVE** badge.
+
+The scraper writes `output/session_health.json` automatically (atomically, on
+every event) — nothing to configure.
+
+---
+
 ## 🛡️ How It Works (Anti-Detection)
 
 | Technique | What It Does |
 |-----------|-------------|
 | **Random delays** | Waits 8–18 seconds between profiles (not fixed) |
 | **Session breaks** | 1–3 min break every 15 requests, scrolls feed naturally |
-| **Proxy rotation** | Different IP address every 15–45 requests |
+| **Proxy rotation** | Round-robins IPs — never the same proxy twice in a row |
+| **Exponential backoff** | Adaptive breaks grow with the error streak (~60s → capped 600s, jittered) |
+| **Smart login** | Restores saved sessions; retries with backoff; polls 2FA/checkpoints |
 | **Stealth JS** | Hides signs that a browser is being automated |
 | **User agent rotation** | Rotates between real Chrome and Safari agents |
 | **Human-like typing** | Types credentials one character at a time |
@@ -343,11 +428,31 @@ Login error: Timeout 15000ms exceeded
 
 ---
 
-**⚠️ Verification / CAPTCHA screen**
+**⚠️ Verification / 2FA / CAPTCHA screen**
 
-→ Normal! The scraper pauses for 60 seconds.
-→ Complete the verification manually in the browser window.
-→ The scraper continues automatically after you finish.
+→ Normal! The scraper **polls** the page every 5 seconds (up to
+`LOGIN_CHALLENGE_TIMEOUT_SECONDS`, default 90s) and continues the moment you
+complete the challenge — no wasted waiting. If it isn't finished in time,
+run again; your session may need a fresh login.
+
+---
+
+**❌ "Login rejected by LinkedIn"**
+
+→ That's LinkedIn saying the email/password is wrong — check `config.py` or the
+`LINKEDIN_EMAIL` / `LINKEDIN_PASSWORD` env vars. The scraper gives up immediately
+instead of hammering the login (that's how accounts get locked).
+
+---
+
+**❌ Does everything work?**
+
+→ Run the test suite (no browser or network needed):
+```bash
+python test_scraper_fixes.py
+python test_login_flow.py
+```
+→ Or a real end-to-end smoke test: `python main.py --dry-run`
 
 ---
 

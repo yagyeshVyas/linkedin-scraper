@@ -203,6 +203,7 @@ class Config:
     JOBS_OUTPUT_FILE: str   = "output/linkedin_jobs.xlsx"
     CANDIDATES_OUTPUT_FILE: str = "output/linkedin_candidates.xlsx"
     PROGRESS_FILE: str      = "output/progress.json"
+    SESSION_HEALTH_FILE: str = "output/session_health.json"
     SESSION_DIR: str        = "session/"
     LOG_FILE: str           = "output/scraper.log"
 

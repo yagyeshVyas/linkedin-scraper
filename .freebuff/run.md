@@ -23,6 +23,13 @@ To actually run the scraper itself (not the dashboard):
 .venv/Scripts/python.exe main.py
 ```
 
+Safe smoke test (launches browser, logs in, runs ONE search, saves nothing):
+
+```
+.venv/Scripts/python.exe main.py --dry-run
+.venv/Scripts/python.exe main.py --dry-run --mode jobs
+```
+
 (The venv existed but had been left empty — deps were never installed. Behavioral
 tests for the scraper fixes: `.venv/Scripts/python.exe test_scraper_fixes.py`.)
 
@@ -32,6 +39,9 @@ content like the Known Issues list) — with only the dynamic data:
 
 - `output/progress.json` — scraped profile records (stats + searchable table)
 - `output/scraper.log` — last 40 lines (colorized activity feed)
+- `output/session_health.json` — latest run's telemetry (Session Health panel:
+  login reason, proxy, error streaks, daily searches; written by the scraper
+  via `save_session_health`, generated only after a real run)
 - `*.py` modules — in-process `ast.parse` syntax check (Project Health table;
   never writes `.pyc` files)
 

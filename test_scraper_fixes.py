@@ -264,6 +264,193 @@ def test_failed_url_retry_recovers():
     assert asyncio.run(s._retry_failed_profiles()) == 0
 
 
+def test_dry_run_flow():
+    L.human_delay = _noop
+    L.random_scroll = _noop
+    L.setup_logging = _noop  # keep the real scraper.log clean
+    L.save_session_health = _noop  # keep the real session_health.json clean
+    L.save_session_health_live = _noop
+
+    class FakeScraper(L.LinkedInScraper):
+        def __init__(self, cfg):
+            super().__init__(cfg)
+            self.launched = False
+            self.logged_in = False
+            self.search_calls = []
+
+        async def _launch_browser(self):
+            self.launched = True
+
+        async def login(self):
+            self.logged_in = True
+            return True
+
+        async def search_people(self, company, title):
+            self.search_calls.append(("people", company, title))
+            return ["https://www.linkedin.com/in/a"]
+
+        async def search_jobs(self, keyword):
+            self.search_calls.append(("jobs", keyword))
+            return [{"url": "https://www.linkedin.com/jobs/view/1"}]
+
+        async def search_candidates(self, skill):
+            self.search_calls.append(("candidates", skill))
+            return ["https://www.linkedin.com/in/c"]
+
+    cfg = Config()
+    cfg.USE_PERSISTENT_SESSION = False
+
+    # people mode: first company × first configured title
+    s = FakeScraper(cfg)
+    assert asyncio.run(s.dry_run(["Walmart"])) is True
+    assert s.launched and s.logged_in
+    assert s.search_calls == [("people", "Walmart", "Recruiter")]  # JOB_TITLES[0]
+    assert s.results == [] and s.scraped_urls == set(), "dry run must not scrape"
+
+    # jobs mode with empty input → fallback keyword, still one search
+    cfg.SEARCH_MODE = "jobs"
+    s2 = FakeScraper(cfg)
+    assert asyncio.run(s2.dry_run([])) is True
+    assert s2.search_calls == [("jobs", "python")]
+
+    # candidates mode
+    cfg.SEARCH_MODE = "candidates"
+    s3 = FakeScraper(cfg)
+    assert asyncio.run(s3.dry_run(["Python"])) is True
+    assert s3.search_calls == [("candidates", "Python")]
+
+    # login failure aborts the dry run
+    class NoLogin(FakeScraper):
+        async def login(self):
+            return False
+
+    s4 = NoLogin(Config())
+    assert asyncio.run(s4.dry_run(["Walmart"])) is False
+    assert s4.search_calls == [], "no search should run when login fails"
+
+
+def test_cli_parser():
+    import main
+
+    args = main.build_parser().parse_args(["--dry-run", "--mode", "jobs"])
+    assert args.dry_run is True and args.mode == "jobs"
+
+    plain = main.build_parser().parse_args([])
+    assert plain.dry_run is False and plain.mode is None
+
+    # default mode comes from config when --mode is omitted
+    cfg = Config()
+    assert cfg.SEARCH_MODE == "people"
+
+
+def test_session_health_store_rolling_cap():
+    import json
+    import tempfile
+
+    from utils import save_session_health
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = str(Path(tmp) / "health.json")
+        for i in range(25):
+            save_session_health(p, {"run": i, "login": {"ok": True, "reason": "fresh"}})
+        data = json.loads(Path(p).read_text(encoding="utf-8"))
+        assert len(data["runs"]) == 20, "rolling cap of 20 runs"
+        assert data["runs"][0]["run"] == 5, "oldest run is dropped"
+        assert data["last"]["run"] == 24, "last mirrors the newest entry"
+
+    # Missing/corrupt file → clean start, no crash
+    with tempfile.TemporaryDirectory() as tmp:
+        p = str(Path(tmp) / "health.json")
+        Path(p).write_text("not json", encoding="utf-8")
+        save_session_health(p, {"run": 0})
+        data = json.loads(Path(p).read_text(encoding="utf-8"))
+        assert data["last"]["run"] == 0
+
+
+def test_session_health_live_then_finalize():
+    import json
+    import tempfile
+
+    from utils import save_session_health, save_session_health_live
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = str(Path(tmp) / "health.json")
+        # Live: dashboard sees the in-progress run immediately.
+        live = {"status": "running", "mode": "people", "ban_risk": 5, "events": [{"kind": "login", "detail": "ok: restored"}]}
+        save_session_health_live(p, live)
+        data = json.loads(Path(p).read_text(encoding="utf-8"))
+        assert data["current"] == live and data["last"] == live
+        assert data["runs"] == []
+
+        # Update mid-run.
+        live2 = {**live, "ban_risk": 15, "events": [*live["events"], {"kind": "throttle", "detail": "3 consecutive"}]}
+        save_session_health_live(p, live2)
+        data = json.loads(Path(p).read_text(encoding="utf-8"))
+        assert data["last"] == live2 and len(data["runs"]) == 0
+
+        # Finalize: moves into history, clears current.
+        save_session_health(p, live2)
+        data = json.loads(Path(p).read_text(encoding="utf-8"))
+        assert data["current"] is None
+        assert data["runs"] == [live2]
+        assert data["last"] == live2
+
+
+def test_ban_risk_logic():
+    cfg = Config()
+    s = L.LinkedInScraper(cfg)
+
+    # Clean session → zero risk
+    assert s._compute_ban_risk() == 0
+
+    # Failed login is the heaviest signal
+    s.telemetry["login"] = {"ok": False, "reason": "credentials"}
+    assert s._compute_ban_risk() >= 40
+
+    # Throttles and streaks add up, capped at 100
+    s.telemetry["login"] = None
+    s.telemetry["throttle_events"] = 10  # → 30 (capped)
+    s.telemetry["max_consecutive_errors"] = 20  # → 20 (capped)
+    assert s._compute_ban_risk() == 50
+
+    # Free proxy bumps the score
+    s.telemetry["proxy"] = {"source": "free", "url": "x"}
+    assert s._compute_ban_risk() == 55
+
+    # Daily-cap hit adds a final bump
+    s.telemetry["daily_searches"] = s.telemetry["daily_search_limit"]
+    assert s._compute_ban_risk() == 60
+
+    # Failures combine up to the cap
+    s.telemetry["login"] = {"ok": False, "reason": "credentials"}
+    assert s._compute_ban_risk() == 100
+
+
+def test_generator_loads_session_health():
+    import json
+    import tempfile
+
+    import generate_dashboard as gd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        old_root = gd.ROOT
+        gd.ROOT = Path(tmp)
+        try:
+            assert gd.load_session_health() == {}, "missing file → empty dict"
+            out = Path(tmp) / "output"
+            out.mkdir(parents=True)
+            (out / "session_health.json").write_text(
+                json.dumps({"runs": [], "last": {"mode": "people", "login": {"ok": True, "reason": "restored"}}}),
+                encoding="utf-8",
+            )
+            assert gd.load_session_health() == {"mode": "people", "login": {"ok": True, "reason": "restored"}}
+            # Corrupt JSON → empty dict, generator keeps working
+            (out / "session_health.json").write_text("{oops", encoding="utf-8")
+            assert gd.load_session_health() == {}
+        finally:
+            gd.ROOT = old_root
+
+
 def test_login_helpers():
     cfg = Config()
     s = LinkedInScraper(cfg)
@@ -293,7 +480,10 @@ if __name__ == "__main__":
                test_ensure_free_proxies_gates_refresh,
                test_proxy_manager_cache_used_without_network,
                test_backoff_growth_and_cap,
-               test_failed_url_retry_recovers, test_login_helpers,
+               test_failed_url_retry_recovers, test_dry_run_flow,
+               test_cli_parser, test_session_health_store_rolling_cap,
+               test_session_health_live_then_finalize, test_ban_risk_logic,
+               test_generator_loads_session_health, test_login_helpers,
                test_config_defaults]:
         fn()
         print(f"PASS {fn.__name__}")

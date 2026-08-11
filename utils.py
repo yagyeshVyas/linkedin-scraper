@@ -7,6 +7,7 @@ Helper functions for delays, scrolling, file I/O, and Excel export.
 import asyncio
 import json
 import logging
+import os
 import random
 import urllib.request
 from datetime import datetime
@@ -94,6 +95,57 @@ def load_progress(filepath: str) -> dict:
                     f"{len(data.get('completed_companies', []))} companies done")
         return data
     return {"results": [], "completed_companies": []}
+
+
+def _load_session_health_file(path: Path) -> dict:
+    """Read the telemetry file, tolerating missing/corrupt content."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(data.get("runs"), list):
+        data["runs"] = []
+    return data
+
+
+def _write_json_atomic(path: Path, data: dict) -> None:
+    """Write via a temp file + rename so a concurrent reader (e.g. the
+    dashboard generator) never sees a half-written file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def save_session_health_live(filepath: str, entry: dict) -> None:
+    """
+    Persist an IN-PROGRESS run so consumers can watch it live.
+    Finished-run history is preserved; `current` and `last` both mirror the
+    live entry. Atomic write.
+    """
+    path = Path(filepath)
+    data = _load_session_health_file(path)
+    data["current"] = entry
+    data["last"] = entry
+    _write_json_atomic(path, data)
+
+
+def save_session_health(filepath: str, entry: dict, cap: int = 20) -> None:
+    """
+    Finalize a run: append it to history with a rolling cap, clear `current`
+    (no longer running), and mirror the newest entry as `last`. Atomic write.
+    Shape: {"runs": [...], "current": null, "last": {...}}
+    """
+    path = Path(filepath)
+    data = _load_session_health_file(path)
+    runs = (data["runs"] + [entry])[-cap:]
+    data["runs"] = runs
+    data["current"] = None
+    data["last"] = entry
+    _write_json_atomic(path, data)
 
 
 # ─────────────────────────────────────────────

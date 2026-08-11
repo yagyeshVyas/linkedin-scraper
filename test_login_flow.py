@@ -105,6 +105,9 @@ def test_session_restore_success():
         assert ok, "restored session should log in without typing"
         assert not s.context.cleared, "valid session must not clear cookies"
         assert s.page.typed == 0, "valid session must not type credentials"
+        assert s.telemetry["login"] == {"ok": True, "reason": "restored"}, s.telemetry["login"]
+        assert [e["kind"] for e in s.telemetry["events"]] == ["login"], s.telemetry["events"]
+        assert s.telemetry["ban_risk"] == 0, s.telemetry["ban_risk"]  # clean session, no risk
     finally:
         session.unlink(missing_ok=True)
 
@@ -137,8 +140,15 @@ def test_bad_credentials_give_up_without_retry():
     ok = asyncio.run(s.login())
     assert not ok, "bad credentials must fail"
     assert s._last_login_error == "credentials"
+    assert s.telemetry["login"]["ok"] is False
+    assert s.telemetry["login"]["reason"] == "credentials"
+    assert s.telemetry["login"].get("detail"), "LinkedIn's own error message must be captured"
     # exactly one login-page load: no retry when credentials are rejected
     assert page.gotos == 1, f"expected 1 goto, got {page.gotos}"
+    # events + ban risk reflect the failure immediately
+    kinds = [e["kind"] for e in s.telemetry["events"]]
+    assert "login" in kinds, kinds
+    assert s.telemetry["ban_risk"] >= 40, s.telemetry["ban_risk"]
 
 
 def test_transient_error_retries_then_succeeds():
@@ -160,6 +170,8 @@ def test_challenge_polls_until_resolved():
     ok = asyncio.run(s.login())
     assert ok, "challenge should resolve via polling once the nav appears"
     assert page.nav_checks >= 3, "helper must poll more than once"
+    assert s.telemetry["login"] == {"ok": True, "reason": "fresh_after_verification"}, s.telemetry["login"]
+    assert s.telemetry["events"][-1]["kind"] == "login", s.telemetry["events"]
 
 
 if __name__ == "__main__":
@@ -175,6 +187,8 @@ if __name__ == "__main__":
 
     L.asyncio = _FastAsync
     L.human_delay = _FastAsync.sleep
+    L.save_session_health_live = _FastAsync.sleep  # keep the real session_health.json clean
+    L.save_session_health = _FastAsync.sleep
 
     tests = [test_session_restore_success, test_stale_session_falls_back_to_fresh_login,
              test_bad_credentials_give_up_without_retry, test_transient_error_retries_then_succeeds,

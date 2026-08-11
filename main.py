@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import sys
 from rich.console import Console
@@ -24,6 +25,22 @@ FORTUNE_500_COMPANIES = [
     "Elevance Health", "Kroger", "Ford Motor", "Comcast", "Phillips 66",
 ]
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="LinkedIn Scraper — use --dry-run for a safe end-to-end smoke test."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="launch the browser, log in, verify one search, then stop "
+             "(no profile scraping, no progress.json writes, no exports)",
+    )
+    parser.add_argument(
+        "--mode", choices=["people", "jobs", "candidates"], default=None,
+        help="search mode (default: config.SEARCH_MODE); useful with --dry-run",
+    )
+    return parser
+
+
 def print_menu():
     menu_text = """
 [1] [bold cyan]🔍 Search People[/] (By Company + Job Title)
@@ -41,6 +58,24 @@ def print_menu():
 
 async def main():
     config = Config()
+    args = build_parser().parse_args()
+
+    # ── Dry-run: skip the menu entirely, one search, nothing saved ──
+    if args.dry_run:
+        if args.mode:
+            config.SEARCH_MODE = args.mode
+        mode = config.SEARCH_MODE.lower()
+        if mode == "jobs":
+            target_list = config.JOB_SEARCH_KEYWORDS or ["python"]
+        elif mode == "candidates":
+            target_list = config.CANDIDATE_SKILLS or ["Python"]
+        else:
+            target_list = TEST_COMPANIES
+        console.print(f"[bold magenta]🧪 DRY RUN[/] — mode={mode.upper()}, one search, no profile scraping")
+        console.print("[bold blue]🚀 Initializing Scraper Engine...[/]")
+        scraper = LinkedInScraper(config)
+        ok = await scraper.dry_run(target_list)
+        sys.exit(0 if ok else 1)
 
     if config.LINKEDIN_EMAIL == "your_email@gmail.com":
         console.print("[bold red]❌ ERROR: Please set your LinkedIn credentials in config.py[/]")

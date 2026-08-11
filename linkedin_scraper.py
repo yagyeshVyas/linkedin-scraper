@@ -14,7 +14,8 @@ from bs4 import BeautifulSoup
 from config import Config
 from utils import (
     human_delay, random_scroll, save_progress,
-    load_progress, setup_logging, export_to_excel
+    load_progress, setup_logging, export_to_excel,
+    save_session_health, save_session_health_live
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,26 @@ class LinkedInScraper:
         self._proxy_cursor = random.randrange(max(1, len(config.PROXY_LIST)))
         # Lazy ProxyManager for USE_FREE_PROXIES mode (auto-fetched free proxies).
         self.proxy_manager = None
+        # Session-health telemetry. Persisted LIVE on every meaningful event
+        # (login, throttle, rotation) so the dashboard can watch the run as it
+        # happens; finalized + moved into history at run end.
+        self.telemetry = {
+            "status": "running",
+            "started_at": None,
+            "finished_at": None,
+            "mode": None,
+            "login": None,
+            "proxy": {"source": "none", "url": None},
+            "max_consecutive_errors": 0,
+            "throttle_events": 0,
+            "daily_searches": 0,
+            "daily_search_limit": config.MAX_DAILY_SEARCHES,
+            "records_scraped": 0,
+            "recovered": 0,
+            "still_failed": 0,
+            "ban_risk": 0,
+            "events": [],
+        }
 
     # ─────────────────────────────────────────────
     #  BROWSER SETUP & ANTI-BLOCK
@@ -68,12 +89,14 @@ class LinkedInScraper:
             proxy_url = self._next_proxy()
             proxy_dict = {"server": proxy_url}
             logger.info(f"🛡️  Using proxy server: {proxy_url}")
+            self.telemetry["proxy"] = {"source": "config_list", "url": proxy_url}
         elif self.config.USE_FREE_PROXIES:
             await self._ensure_free_proxies()
             proxy_url = self._next_proxy()
             if proxy_url:
                 proxy_dict = {"server": proxy_url}
                 logger.info(f"🌐 Using free proxy: {proxy_url}")
+                self.telemetry["proxy"] = {"source": "free", "url": proxy_url}
             else:
                 logger.warning("🌐 No free proxy available — using direct connection")
 
@@ -141,6 +164,7 @@ class LinkedInScraper:
     async def _rotate_identity(self):
         """Re-launch browser with a new IP/proxy and User-Agent to shed fingerprint."""
         logger.info("🔄 Rotating User-Agent & clearing state to shed fingerprint...")
+        self._telemetry_event("rotate", f"proxy: {self.current_proxy or 'direct'}")
         if self.browser:
             await self.browser.close()
         
@@ -212,6 +236,11 @@ class LinkedInScraper:
                     self.current_proxy = None
                 await self._rotate_identity()
             
+            self.telemetry["max_consecutive_errors"] = max(
+                self.telemetry["max_consecutive_errors"], self.consecutive_errors
+            )
+            self.telemetry["throttle_events"] += 1
+            self._telemetry_event("throttle", f"{self.consecutive_errors} consecutive errors")
             self.consecutive_errors = 0
             return True
             
@@ -295,6 +324,7 @@ class LinkedInScraper:
                 await human_delay(2, 4)
                 if await self._is_logged_in():
                     logger.info("✅ Session restored — already logged in.")
+                    self._record_login(True, "restored")
                     return True
                 # Stale session: drop cookies so the fresh login isn't fought by
                 # a half-validated old session.
@@ -313,12 +343,14 @@ class LinkedInScraper:
                     logger.info(f"💾 Session state saved to {session_file}")
                 return True
             # Bad credentials won't fix themselves — retrying only risks an account lock.
+            # (The detailed outcome was already recorded inside _fresh_login.)
             if self._last_login_error == "credentials":
                 return False
             if attempt < max_attempts:
                 backoff = random.uniform(15, 30) * attempt
                 logger.warning(f"⏳ Login retry {attempt}/{max_attempts} in {backoff:.0f}s...")
                 await asyncio.sleep(backoff)
+        self._record_login(False, "retries_exhausted")
         return False
 
     async def _fresh_login(self) -> bool:
@@ -356,6 +388,7 @@ class LinkedInScraper:
             # Fast path: straight to an authenticated page.
             if await self._is_logged_in():
                 logger.info("✅ Login successful!")
+                self._record_login(True, "fresh")
                 return True
 
             url = self.page.url
@@ -371,13 +404,16 @@ class LinkedInScraper:
                 )
                 logger.error(f"❌ Login rejected by LinkedIn: {error_text or 'check LINKEDIN_EMAIL / LINKEDIN_PASSWORD'}")
                 self._last_login_error = "credentials"
+                self._record_login(False, "credentials", detail=error_text or "")
                 return False
 
             # Checkpoint / 2FA / verification — poll until resolved.
             if any(x in url for x in ["checkpoint", "challenge", "verification"]):
                 if await self._await_challenge_resolution(self.config.LOGIN_CHALLENGE_TIMEOUT_SECONDS):
                     logger.info("✅ Login successful (after verification)!")
+                    self._record_login(True, "fresh_after_verification")
                     return True
+                self._record_login(False, "challenge_timeout")
                 return False
 
             # Landed on the homepage without a challenge — poke at the feed once.
@@ -386,14 +422,17 @@ class LinkedInScraper:
                 await human_delay(2, 4)
                 if await self._is_logged_in():
                     logger.info("✅ Login successful!")
+                    self._record_login(True, "fresh")
                     return True
 
             logger.error(f"❌ Login failed. URL: {self.page.url}")
             logger.error("   Double-check LINKEDIN_EMAIL and LINKEDIN_PASSWORD in config.py")
+            self._record_login(False, "unknown")
             return False
 
         except Exception as e:
             logger.error(f"❌ Login error: {e}")
+            self._record_login(False, "error", detail=str(e)[:200])
             return False
 
     async def _type_like_human(self, element, text: str):
@@ -462,7 +501,7 @@ class LinkedInScraper:
                     break
                     
                 self.consecutive_errors = 0  # Reset errors on success
-                self.daily_searches += 1
+                self._register_search()
                 
                 await random_scroll(self.page, scrolls=5) # Scroll more for jobs to load
 
@@ -615,7 +654,7 @@ class LinkedInScraper:
                     break
                     
                 self.consecutive_errors = 0
-                self.daily_searches += 1
+                self._register_search()
                 
                 await random_scroll(self.page)
 
@@ -689,7 +728,7 @@ class LinkedInScraper:
                     break
                     
                 self.consecutive_errors = 0
-                self.daily_searches += 1
+                self._register_search()
                 
                 await random_scroll(self.page)
 
@@ -957,6 +996,7 @@ class LinkedInScraper:
             if profile:
                 self.results.append(profile)
                 self.scraped_urls.add(f["url"])
+                self.telemetry["records_scraped"] = len(self.results)
                 recovered += 1
             await human_delay(
                 self.config.MIN_DELAY_BETWEEN_PROFILES,
@@ -966,6 +1006,50 @@ class LinkedInScraper:
         self.failed_urls = [f for f in self.failed_urls if f.get("url") not in self.scraped_urls]
         logger.info(f"   ↪ Recovered {recovered}, {len(self.failed_urls)} still failing.")
         return recovered
+
+    async def dry_run(self, input_list: list) -> bool:
+        """
+        Safe end-to-end smoke test: launch the browser, log in, and run ONE
+        search for the current mode — then stop. No profiles are scraped, no
+        progress.json is written, nothing is exported.
+        Returns True only if browser + login + search all worked.
+        """
+        setup_logging(self.config.LOG_FILE)
+        mode = self.config.SEARCH_MODE.lower()
+        logger.info("=" * 65)
+        logger.info(f"  🧪 DRY RUN — mode: {mode.upper()} (no profile scraping)")
+        logger.info("=" * 65)
+
+        self.telemetry["mode"] = mode
+        self.telemetry["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._telemetry_event("run_start", f"dry-run · {mode} mode")
+
+        await self._launch_browser()
+        try:
+            if not await self.login():
+                logger.error("❌ Login failed — dry run aborted.")
+                return False
+
+            if mode == "jobs":
+                keyword = input_list[0] if input_list else "python"
+                jobs = await self.search_jobs(keyword)
+                logger.info(f"✅ DRY RUN OK — {len(jobs)} job card(s) found for '{keyword}'. No profiles scraped.")
+            elif mode == "candidates":
+                skill = input_list[0] if input_list else "Python"
+                urls = await self.search_candidates(skill)
+                logger.info(f"✅ DRY RUN OK — {len(urls)} candidate profile(s) found for '{skill}'. No profiles scraped.")
+            else:  # people
+                company = input_list[0] if input_list else "Google"
+                title = self.config.JOB_TITLES[0] if self.config.JOB_TITLES else "Recruiter"
+                urls = await self.search_people(company, title)
+                logger.info(f"✅ DRY RUN OK — {len(urls)} profile(s) found for '{title}' at '{company}'. No profiles scraped.")
+            return True
+        finally:
+            if self.browser:
+                await self.browser.close()
+            if self.playwright:
+                await self.playwright.stop()
+            self._finalize_telemetry(mode)
 
     # ─────────────────────────────────────────────
     #  SESSION MANAGEMENT
@@ -984,6 +1068,68 @@ class LinkedInScraper:
     #  MAIN ORCHESTRATION
     # ─────────────────────────────────────────────
 
+    def _compute_ban_risk(self) -> int:
+        """0-100 heuristic: a failed login is the heaviest signal, then
+        throttles and error streaks, with small bumps for free proxies and
+        hitting the daily search cap."""
+        t = self.telemetry
+        score = 0
+        if t.get("login") and not t["login"].get("ok"):
+            score += 40
+        score += min((t.get("throttle_events") or 0) * 10, 30)
+        score += min((t.get("max_consecutive_errors") or 0) * 5, 20)
+        if t.get("proxy", {}).get("source") == "free":
+            score += 5
+        limit = t.get("daily_search_limit") or 0
+        if limit and (t.get("daily_searches") or 0) >= limit:
+            score += 5
+        return min(score, 100)
+
+    def _telemetry_event(self, kind: str, detail: str = ""):
+        """Append a timestamped event and persist the live session file so a
+        crash mid-run leaves the full story behind."""
+        events = self.telemetry.get("events", [])[-49:]
+        events.append({
+            "t": datetime.now().strftime("%H:%M:%S"),
+            "kind": kind,
+            "detail": detail,
+        })
+        self.telemetry["events"] = events
+        self.telemetry["ban_risk"] = self._compute_ban_risk()
+        try:
+            save_session_health_live(self.config.SESSION_HEALTH_FILE, self.telemetry)
+        except Exception as e:
+            logger.warning(f"⚠️  Could not persist session telemetry: {e}")
+
+    def _record_login(self, ok: bool, reason: str, detail: str = ""):
+        """Record a login outcome in telemetry and emit a login event."""
+        entry = {"ok": ok, "reason": reason}
+        if detail:
+            entry["detail"] = detail
+        self.telemetry["login"] = entry
+        self._telemetry_event("login", f"{'ok' if ok else 'fail'}: {reason}")
+
+    def _register_search(self):
+        """Count one search-page load (daily cap + live telemetry counter)."""
+        self._register_search()
+        self.telemetry["daily_searches"] = self.daily_searches
+
+    def _finalize_telemetry(self, mode: str, recovered: int = 0):
+        """Mark the run finished and move it into session_health history."""
+        self.telemetry["mode"] = mode
+        self.telemetry["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.telemetry["daily_searches"] = self.daily_searches
+        self.telemetry["records_scraped"] = len(self.results)
+        self.telemetry["recovered"] = recovered
+        self.telemetry["still_failed"] = len(self.failed_urls)
+        self.telemetry["status"] = "finished"
+        self.telemetry["ban_risk"] = self._compute_ban_risk()
+        self._telemetry_event("run_end", f"{mode} mode · {len(self.results)} records")
+        try:
+            save_session_health(self.config.SESSION_HEALTH_FILE, self.telemetry)
+        except Exception as e:
+            logger.warning(f"⚠️  Could not write session-health telemetry: {e}")
+
     async def run(self, input_list: list):
         """
         Main loop:
@@ -994,6 +1140,9 @@ class LinkedInScraper:
         setup_logging(self.config.LOG_FILE)
         
         mode = self.config.SEARCH_MODE.lower()
+        self.telemetry["mode"] = mode
+        self.telemetry["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._telemetry_event("run_start", f"{mode} mode")
 
         logger.info("=" * 65)
         logger.info(f"  LinkedIn Scraper v3.0 — Mode: {mode.upper()}")
@@ -1042,6 +1191,7 @@ class LinkedInScraper:
                                 if profile:
                                     self.results.append(profile)
                                     self.scraped_urls.add(url)
+                                    self.telemetry["records_scraped"] = len(self.results)
 
                                 await human_delay(
                                     self.config.MIN_DELAY_BETWEEN_PROFILES,
@@ -1115,6 +1265,7 @@ class LinkedInScraper:
                                 profile['search_skill'] = skill
                                 self.results.append(profile)
                                 self.scraped_urls.add(url)
+                                self.telemetry["records_scraped"] = len(self.results)
 
                             await human_delay(
                                 self.config.MIN_DELAY_BETWEEN_PROFILES,
@@ -1138,9 +1289,10 @@ class LinkedInScraper:
 
         finally:
             # One last chance for profiles that failed transiently.
+            recovered = 0
             if mode in ("people", "candidates") and self.config.RETRY_FAILED_PROFILES:
                 try:
-                    await self._retry_failed_profiles()
+                    recovered = await self._retry_failed_profiles()
                 except Exception as e:
                     logger.warning(f"⚠️  Failed-URL retry pass errored: {e}")
 
@@ -1180,3 +1332,5 @@ class LinkedInScraper:
             if mode != "jobs":
                 logger.info(f"   Failed URLs     : {len(self.failed_urls)}")
             logger.info(f"   Searches done   : {self.daily_searches} page loads")
+
+            self._finalize_telemetry(mode, recovered)

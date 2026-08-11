@@ -7,6 +7,7 @@ Usage:
 Fills in `dashboard_template.html` (the UI source of truth) with live data:
     - output/progress.json   → scraped profile records (stats + searchable table)
     - output/scraper.log     → last 40 lines (colorized activity feed)
+    - output/session_health.json → latest run's telemetry (Session Health panel)
     - *.py modules           → in-process ast syntax check (Project Health table)
 
 Static content (labels, known issues, styling) lives in the template; this script
@@ -42,6 +43,19 @@ def load_records() -> list:
     except Exception:
         return []
     return results if isinstance(results, list) else []
+
+
+def load_session_health() -> dict:
+    """Load the latest run's session-health telemetry ({} if none yet)."""
+    path = ROOT / "output" / "session_health.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        last = data.get("last")
+        return last if isinstance(last, dict) else {}
+    except Exception:
+        return {}
 
 
 def load_log_tail() -> str:
@@ -88,6 +102,7 @@ def main():
         "__RECORDS_JSON__": json.dumps(records, ensure_ascii=False),
         "__LOG_JSON__": json.dumps(load_log_tail(), ensure_ascii=False),
         "__HEALTH_JSON__": json.dumps(checks, ensure_ascii=False),
+        "__SESSION_HEALTH_JSON__": json.dumps(load_session_health(), ensure_ascii=False),
         "__GEN_AT__": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     for key, value in fill.items():

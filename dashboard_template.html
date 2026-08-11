@@ -265,6 +265,20 @@
   .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
   .pill.bad { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
   .detail { color: var(--muted); font-size: 11.5px; max-width: 560px; font-family: var(--mono); word-break: break-word; }
+  .tl { color: var(--muted); font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; padding-right: 18px; }
+  .sh-top { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: center; margin-bottom: 14px; }
+  .sh-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 999px; }
+  .sh-pill.running { color: var(--brand-2); background: rgba(56, 189, 248, .12); border: 1px solid rgba(56, 189, 248, .35); animation: pulse 2s ease-in-out infinite; }
+  .sh-pill.finished { color: var(--ok); background: rgba(52, 211, 153, .12); border: 1px solid rgba(52, 211, 153, .35); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+  .gauge { flex: 1; min-width: 190px; }
+  .gauge .g-label { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); margin-bottom: 5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .gauge .g-track { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .gauge .g-fill { height: 100%; width: 0; border-radius: 999px; transition: width .7s cubic-bezier(.22, 1, .36, 1); }
+  .sh-events { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .sh-event { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--line-soft); border: 1px solid var(--line); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .sh-event b { color: var(--text); font-weight: 600; }
+  @media (prefers-reduced-motion: reduce) { .sh-pill.running { animation: none; } .gauge .g-fill { transition: none; } }
   code { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: var(--mono); }
   .issues li { margin-bottom: 10px; color: var(--muted); list-style: none; padding-left: 20px; position: relative; }
   .issues li::before { content: "•"; position: absolute; left: 6px; color: var(--brand-2); font-weight: 700; }
@@ -453,6 +467,8 @@
       <thead><tr><th>Module</th><th>Syntax check</th><th>Detail</th></tr></thead>
       <tbody id="healthRows"></tbody>
     </table></div>
+    <div class="sec-head"><span class="n">6</span><h2>Session Health</h2><span class="sub">telemetry from the latest run</span></div>
+    <div class="box" id="sessionHealth"><p class="chart-empty">No run recorded yet — start a scrape to see session telemetry.</p></div>
     <div class="sec-head"><span class="n">2</span><h2>Known Issues</h2><span class="sub">remaining pre-existing state</span></div>
     <div class="box issues"><ul class="list">
       <li><b>Security</b> — hardcoded LinkedIn credentials remain as defaults in <code>config.py</code>; rotate them and switch to env vars.</li>
@@ -489,6 +505,7 @@
 const RECORDS = __RECORDS_JSON__;
 const LOG_RAW = __LOG_JSON__;
 const HEALTH  = __HEALTH_JSON__;
+const SESSION_HEALTH = __SESSION_HEALTH_JSON__;
 const GEN_AT  = "__GEN_AT__";
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -870,6 +887,53 @@ function renderHealth() {
   $("#healthRows").innerHTML = rows;
 }
 
+function renderSessionHealth() {
+  const el = $("#sessionHealth");
+  const t = SESSION_HEALTH;
+  if (!t || typeof t !== "object" || Object.keys(t).length === 0) {
+    el.innerHTML = '<p class="chart-empty">No run recorded yet — start a scrape to see session telemetry.</p>';
+    return;
+  }
+  const login = t.login || {};
+  const loginOk = login.ok ? "✓" : "✗";
+  const loginReason = login.reason ? String(login.reason).replace(/_/g, " ") : "—";
+  const proxy = t.proxy || {};
+  const running = t.status === "running";
+  const risk = Math.min(100, Math.max(0, Number(t.ban_risk) || 0));
+  const riskColor = risk < 30 ? "#34d399" : risk < 60 ? "#fbbf24" : "#fb7185";
+  const dailyLimit = Number(t.daily_search_limit) || 80;
+  const dailyPct = Math.min(100, Math.round((Number(t.daily_searches) || 0) / dailyLimit * 100));
+  const events = (Array.isArray(t.events) ? t.events : []).slice(-6).reverse();
+
+  const rows = [
+    ["Run started", esc(t.started_at || "—")],
+    ["Run finished", running ? "— (in progress)" : esc(t.finished_at || "—")],
+    ["Mode", esc(String(t.mode || "—").toUpperCase())],
+    ["Login", `<span class="${login.ok ? "pill ok" : "pill bad"}">${loginOk} ${esc(loginReason)}</span>${login.detail ? `<div class="detail">${esc(login.detail)}</div>` : ""}`],
+    ["Proxy", esc(proxy.source === "none" ? "direct connection" : (proxy.source || "—") + (proxy.url ? " · " + proxy.url : ""))],
+    ["Max error streak", esc(String(t.max_consecutive_errors ?? 0)) + " consecutive · " + esc(String(t.throttle_events ?? 0)) + " throttle(s)"],
+    ["Records scraped", esc(String(t.records_scraped ?? 0)) + (t.recovered ? ` · ${esc(String(t.recovered))} recovered` : "") + (t.still_failed ? ` · ${esc(String(t.still_failed))} still failing` : "")],
+  ];
+
+  el.innerHTML =
+    `<div class="sh-top">` +
+      `<span class="sh-pill ${running ? "running" : "finished"}">${running ? "● LIVE — RUNNING" : "● FINISHED"}</span>` +
+      `<div class="gauge"><div class="g-label"><span>Ban risk</span><span>${risk} / 100</span></div>` +
+        `<div class="g-track"><div class="g-fill" data-w="${risk}" style="background:${riskColor}"></div></div></div>` +
+      `<div class="gauge"><div class="g-label"><span>Daily search cap</span><span>${esc(String(t.daily_searches ?? 0))} / ${dailyLimit}</span></div>` +
+        `<div class="g-track"><div class="g-fill" data-w="${dailyPct}" style="background:${dailyPct >= 100 ? "#fb7185" : "#38bdf8"}"></div></div></div>` +
+    `</div>` +
+    '<table style="min-width:420px"><tbody>' +
+      rows.map(([k, v]) => `<tr><td class="tl">${k}</td><td>${v}</td></tr>`).join("") +
+    "</tbody></table>" +
+    (events.length ? '<div class="sh-events">' +
+      events.map(e => `<span class="sh-event"><b>${esc(e.kind || "")}</b> ${esc(e.detail || "")} · ${esc(e.t || "")}</span>`).join("") +
+      "</div>" : "");
+
+  // Animate the gauges on the next frame (respects reduced-motion via CSS).
+  requestAnimationFrame(() => el.querySelectorAll(".g-fill").forEach(g => g.style.width = g.dataset.w + "%"));
+}
+
 /* ═══════════ BACK TO TOP ═══════════ */
 const totop = $("#totop");
 window.addEventListener("scroll", () => totop.classList.toggle("show", scrollY > 500), { passive: true });
@@ -882,6 +946,7 @@ buildStats();
 renderProfiles();
 renderLog();
 renderHealth();
+renderSessionHealth();
 renderAnalytics();
 animateOverview();
 </script>

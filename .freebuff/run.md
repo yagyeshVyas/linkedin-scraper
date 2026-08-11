@@ -15,6 +15,17 @@ syntax status):
 python generate_dashboard.py
 ```
 
+To actually run the scraper itself (not the dashboard):
+
+```
+.venv/Scripts/python.exe -m pip install -r Requirements.txt
+.venv/Scripts/python.exe -m playwright install chromium
+.venv/Scripts/python.exe main.py
+```
+
+(The venv existed but had been left empty — deps were never installed. Behavioral
+tests for the scraper fixes: `.venv/Scripts/python.exe test_scraper_fixes.py`.)
+
 The generator is stdlib-only (no installs, no network). It fills in
 `dashboard_template.html` — the UI source of truth (styling, layout, static
 content like the Known Issues list) — with only the dynamic data:
@@ -23,8 +34,6 @@ content like the Known Issues list) — with only the dynamic data:
 - `output/scraper.log` — last 40 lines (colorized activity feed)
 - `*.py` modules — in-process `ast.parse` syntax check (Project Health table;
   never writes `.pyc` files)
-- `config.py` — declared job titles / location / GEO_URN (credentials are
-  deliberately never read)
 
 Edit the template for any layout or styling change, then re-run the generator.
 All three files (`dashboard_template.html`, `generate_dashboard.py`,

@@ -52,7 +52,9 @@ async def main():
         
         if choice == '1':
             config.SEARCH_MODE = "people"
-            target_list = list(dict.fromkeys(FORTUNE_500_COMPANIES)) # Or TEST_COMPANIES
+            # USE_TEST_COMPANIES=True gives a fast 2-company smoke run.
+            source = TEST_COMPANIES if config.USE_TEST_COMPANIES else FORTUNE_500_COMPANIES
+            target_list = list(dict.fromkeys(source))
             if not config.JOB_TITLES:
                 console.print("[bold red]❌ ERROR: No JOB_TITLES set in config.py[/]")
                 sys.exit(1)
@@ -111,6 +113,7 @@ async def main():
 
     if config.SEARCH_MODE == "people":
         table.add_row("Total Searches", f"{len(target_list) * len(config.JOB_TITLES)} (Companies × Titles)")
+        table.add_row("Company List", "TEST (quick smoke run)" if config.USE_TEST_COMPANIES else f"FORTUNE 500 ({len(FORTUNE_500_COMPANIES)})")
         table.add_row("Output file", config.OUTPUT_FILE)
     elif config.SEARCH_MODE == "jobs":
         table.add_row("Output file", config.JOBS_OUTPUT_FILE)

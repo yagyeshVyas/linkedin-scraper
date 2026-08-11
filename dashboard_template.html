@@ -288,6 +288,51 @@
 
   .kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; font-size: 11px; font-family: var(--mono); color: var(--muted); }
 
+  /* ─────────── analytics charts ─────────── */
+  .chart svg { width: 100%; height: auto; display: block; }
+  .chart .bar-label { fill: var(--muted); font-size: 10px; }
+  .chart .bar-val { fill: var(--brand-2); font-size: 10px; font-weight: 700; }
+  .chart-empty { color: var(--faint); font-size: 12.5px; padding: 8px 0; }
+  .donut-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .donut svg { width: 120px; height: 120px; display: block; }
+  .legend-list { font-size: 12.5px; color: var(--muted); }
+  .legend-list div { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+  .legend-list .sw2 { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+  /* ─────────── structured filters ─────────── */
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+  .filters select { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 9px; padding: 7px 10px; font-size: 12.5px; font-family: var(--font); outline: none; }
+  .filters select:focus { border-color: var(--brand-2); }
+  .filters .check { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .filters .check input { accent-color: var(--brand); }
+
+  /* ─────────── table density + row focus ─────────── */
+  .table-wrap.compact td { padding: 4px 8px; }
+  tbody tr { cursor: pointer; }
+  tbody tr:focus { outline: 2px solid var(--brand-2); outline-offset: -2px; }
+  tbody tr.selected td { background: rgba(56, 189, 248, .12); }
+
+  /* ─────────── profile drawer ─────────── */
+  .backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 70; }
+  .backdrop.show { opacity: 1; pointer-events: auto; }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(400px, 92vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: var(--shadow); transform: translateX(102%); transition: transform .25s ease; z-index: 80; display: flex; flex-direction: column; }
+  .drawer.open { transform: none; }
+  .drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+  .drawer-head h3 { font-size: 16px; overflow-wrap: anywhere; }
+  .drawer-body { padding: 16px 18px; overflow-y: auto; }
+  .drawer-title { font-size: 13.5px; font-weight: 600; color: var(--brand-2); }
+  .drawer-headline { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .drawer-meta { font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.7; }
+  .drawer-meta b { color: var(--text); }
+  .drawer-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .btn { appearance: none; cursor: pointer; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font-family: var(--font); font-size: 12.5px; font-weight: 700; padding: 8px 14px; border-radius: 9px; text-decoration: none; transition: all .15s; }
+  .btn:hover { border-color: var(--brand-2); }
+  .btn.primary { background: linear-gradient(135deg, var(--brand), #084d94); border-color: transparent; color: #fff; }
+
+  /* ─────────── toast ─────────── */
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 20px); background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 9px 18px; border-radius: 999px; font-size: 12.5px; font-weight: 600; opacity: 0; pointer-events: none; transition: all .2s; z-index: 90; box-shadow: var(--shadow); }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
     html { scroll-behavior: auto; }
@@ -298,12 +343,12 @@
 <div class="topbar">
   <div class="topbar-inner">
     <div class="logo"><span class="dot">🔵</span> LinkedIn Scraper <small>· project dashboard</small></div>
-    <nav class="tabs" id="tabs">
+    <nav class="tabs">
       <button class="tabbtn active" data-tab="overview">📊 Overview</button>
+      <button class="tabbtn" data-tab="analytics">📈 Analytics</button>
       <button class="tabbtn" data-tab="profiles">👤 Profiles</button>
       <button class="tabbtn" data-tab="activity">🧾 Activity</button>
       <button class="tabbtn" data-tab="health">🩺 Health</button>
-      <button class="tabbtn" data-tab="config">⚙️ Config</button>
     </nav>
     <button class="iconbtn" id="themeBtn" title="Toggle theme" aria-label="Toggle light/dark theme">🌙</button>
   </div>
@@ -336,9 +381,24 @@
     </div>
   </section>
 
+  <!-- ═══════════ ANALYTICS ═══════════ -->
+  <section class="tab" id="tab-analytics">
+    <div class="sec-head"><span class="n">2</span><h2>Analytics</h2><span class="sub">computed live from the embedded records</span></div>
+    <div class="grid2">
+      <div class="box"><h3>Top title keywords</h3><div class="chart" id="chartWords"></div></div>
+      <div class="box"><h3>Locations by US state</h3><div class="chart" id="chartStates"></div></div>
+      <div class="box"><h3>Profiles by scrape day</h3><div class="chart" id="chartDays"></div></div>
+      <div class="box"><h3>Seniority mix</h3><div class="chart" id="chartSeniority"></div></div>
+    </div>
+    <div class="grid2">
+      <div class="box"><h3>Email coverage</h3><div class="donut-row"><div class="donut" id="chartEmails"></div><div id="emailLegend" class="legend-list"></div></div></div>
+      <div class="box"><h3>Top companies</h3><div class="chart" id="chartCompanies"></div></div>
+    </div>
+  </section>
+
   <!-- ═══════════ PROFILES ═══════════ -->
   <section class="tab" id="tab-profiles">
-    <div class="sec-head"><span class="n">2</span><h2>Profiles</h2><span class="sub" id="profilesSub"></span></div>
+    <div class="sec-head"><span class="n">3</span><h2>Profiles</h2><span class="sub" id="profilesSub"></span></div>
     <div class="toolbar">
       <div class="searchbox">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
@@ -347,6 +407,13 @@
       <span class="count-chip" id="countChip"></span>
       <button class="clear-btn" id="clearBtn" disabled>✕ Clear</button>
       <button class="clear-btn" id="csvBtn" disabled>⬇ CSV</button>
+      <button class="clear-btn" id="copyEmailsBtn" disabled title="Copy all emails from the filtered view">✉️ Copy emails</button>
+      <button class="iconbtn" id="densityBtn" title="Toggle compact table" aria-label="Toggle compact table">▤</button>
+    </div>
+    <div class="filters">
+      <select id="filterCompany" aria-label="Filter by company"><option value="">All companies</option></select>
+      <select id="filterState" aria-label="Filter by state"><option value="">All states</option></select>
+      <label class="check"><input type="checkbox" id="filterEmail"> has email</label>
     </div>
     <div class="table-wrap">
       <table>
@@ -364,12 +431,12 @@
         <tbody id="rows"></tbody>
       </table>
     </div>
-    <p class="foot" style="margin-top:14px">💡 Tip: click a column header to sort · press <span class="kbd">/</span> to jump to search · <span class="kbd">⬇ CSV</span> exports the filtered view</p>
+    <p class="foot" style="margin-top:14px">💡 Tip: click a row for details · click a column header to sort · press <span class="kbd">/</span> to jump to search · <span class="kbd">⬇ CSV</span> / <span class="kbd">✉️ Copy emails</span> act on the filtered view</p>
   </section>
 
   <!-- ═══════════ ACTIVITY ═══════════ -->
   <section class="tab" id="tab-activity">
-    <div class="sec-head"><span class="n">3</span><h2>Recent Activity</h2><span class="sub">last 40 lines of <code>output/scraper.log</code></span></div>
+    <div class="sec-head"><span class="n">4</span><h2>Recent Activity</h2><span class="sub">last 40 lines of <code>output/scraper.log</code></span></div>
     <div class="chips" id="logChips">
       <button class="chip active" data-level="">All</button>
       <button class="chip" data-level="INFO">INFO</button>
@@ -381,26 +448,16 @@
 
   <!-- ═══════════ HEALTH ═══════════ -->
   <section class="tab" id="tab-health">
-    <div class="sec-head"><span class="n">4</span><h2>Project Health</h2><span class="sub">live syntax check of every module</span></div>
+    <div class="sec-head"><span class="n">5</span><h2>Project Health</h2><span class="sub">live syntax check of every module</span></div>
     <div class="box" style="overflow:auto"><table style="min-width:640px">
       <thead><tr><th>Module</th><th>Syntax check</th><th>Detail</th></tr></thead>
       <tbody id="healthRows"></tbody>
     </table></div>
-    <div class="sec-head"><span class="n">5</span><h2>Known Issues</h2><span class="sub">pre-existing state of the Python modules</span></div>
+    <div class="sec-head"><span class="n">2</span><h2>Known Issues</h2><span class="sub">remaining pre-existing state</span></div>
     <div class="box issues"><ul class="list">
-      <li><b>config.py</b> — duplicate <code>USER_AGENTS</code> block pasted after the first list closing → <code>IndentationError</code>; nothing imports.</li>
-      <li><b>linkedin_scraper.py</b> — duplicated <code>logger.info(...)</code> final-summary line → <code>SyntaxError</code> (~line 896).</li>
-      <li><b>utils.py</b> — imports stripped to <code>urllib.request</code>/<code>json</code> with a <code># ... existing code ...</code> placeholder; functions reference <code>logger</code>, <code>pd</code>, openpyxl etc. that are never imported → <code>NameError</code> at runtime.</li>
-      <li><b>linkedin_scraper.py</b> — <code>login()</code> uses <code>self.current_account</code> (never set) and <code>config.DISCORD_WEBHOOK_URL</code> (not defined).</li>
       <li><b>Security</b> — hardcoded LinkedIn credentials remain as defaults in <code>config.py</code>; rotate them and switch to env vars.</li>
       <li><b>*_diff.py files</b> — saved patch files for a never-merged "v4.0 Enhanced" line — not runnable modules.</li>
     </ul></div>
-  </section>
-
-  <!-- ═══════════ CONFIG ═══════════ -->
-  <section class="tab" id="tab-config">
-    <div class="sec-head"><span class="n">6</span><h2>Config Snapshot</h2><span class="sub">credentials intentionally omitted</span></div>
-    <div class="box"><ul class="list" id="configList"></ul></div>
   </section>
 
   <footer class="foot">
@@ -410,13 +467,28 @@
 
 <button class="totop" id="totop" title="Back to top" aria-label="Back to top">↑</button>
 
+<div class="backdrop" id="backdrop" hidden></div>
+<div class="drawer" id="drawer" role="dialog" aria-label="Profile details">
+  <div class="drawer-head"><h3 id="drawerName"></h3><button class="iconbtn" id="drawerClose" aria-label="Close details">✕</button></div>
+  <div class="drawer-body">
+    <p class="drawer-title" id="drawerTitle"></p>
+    <p class="drawer-headline" id="drawerHeadline"></p>
+    <p class="drawer-meta" id="drawerMeta"></p>
+    <div class="drawer-actions">
+      <button class="btn" id="drawerEmail" hidden>✉️ Copy email</button>
+      <button class="btn" id="drawerLink">🔗 Copy link</button>
+      <a class="btn primary" id="drawerOpen" target="_blank" rel="noopener">↗ Open profile</a>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
 <script>
 "use strict";
 /* ═══════════ DATA (filled in by generate_dashboard.py) ═══════════ */
 const RECORDS = __RECORDS_JSON__;
 const LOG_RAW = __LOG_JSON__;
 const HEALTH  = __HEALTH_JSON__;
-const CFG     = __CFG_JSON__;
 const GEN_AT  = "__GEN_AT__";
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -520,7 +592,10 @@ function highlight(text) {
 function renderProfiles() {
   const q = query.toLowerCase();
   const rows = RECORDS
-    .filter(r => !q || [r.name, r.title, r.search_company, r.headline, r.location, r.email].some(v => (v || "").toLowerCase().includes(q)))
+    .filter(r => (!q || [r.name, r.title, r.search_company, r.headline, r.location, r.email].some(v => (v || "").toLowerCase().includes(q)))
+      && (!filters.company || r.search_company === filters.company)
+      && (!filters.state || stateOf(r.location) === filters.state)
+      && (!filters.hasEmail || !!r.email))
     .sort((a, b) => {
       const av = (a[sortKey] || "").toLowerCase(), bv = (b[sortKey] || "").toLowerCase();
       return av.localeCompare(bv) * sortDir || (a.name || "").localeCompare(b.name || "");
@@ -530,13 +605,16 @@ function renderProfiles() {
   countChip.textContent = `${rows.length} / ${RECORDS.length}`;
   clearBtn.disabled = !q;
   csvBtn.disabled = !rows.length;
+  copyEmailsBtn.disabled = !rows.length;
   if (!rows.length) {
     $("#rows").innerHTML = `<tr><td colspan="7"><div class="empty">No profiles match “${esc(q)}”</div></td></tr>`;
     return;
   }
   const frag = document.createDocumentFragment();
-  rows.forEach(r => {
+  rows.forEach((r, i) => {
     const tr = document.createElement("tr");
+    tr.tabIndex = 0;
+    tr.dataset.idx = i;
     tr.innerHTML =
       `<td class="name"><a href="${esc(r.url)}" target="_blank" rel="noopener">${highlight(r.name || "—")}</a></td>` +
       `<td>${highlight(r.title || "—")}</td>` +
@@ -556,6 +634,178 @@ $("#search").addEventListener("input", e => {
   debounceT = setTimeout(() => { query = e.target.value.trim(); renderProfiles(); }, 120);
 });
 clearBtn.addEventListener("click", () => { $("#search").value = ""; query = ""; renderProfiles(); $("#search").focus(); });
+
+/* ── structured filters ── */
+const filters = { company: "", state: "", hasEmail: false };
+const filterCompany = $("#filterCompany"), filterState = $("#filterState"), filterEmail = $("#filterEmail");
+const copyEmailsBtn = $("#copyEmailsBtn");
+function stateOf(location) {
+  const parts = (location || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (parts.length >= 3 && /united states/i.test(parts[parts.length - 1])) return parts[1];
+  if (parts.length === 2) return parts[1];
+  return "";
+}
+function populateFilters() {
+  const companies = [...new Set(RECORDS.map(r => r.search_company).filter(Boolean))].sort();
+  const states = [...new Set(RECORDS.map(r => stateOf(r.location)).filter(Boolean))].sort();
+  filterCompany.innerHTML = '<option value="">All companies</option>' + companies.map(c => `<option>${esc(c)}</option>`).join("");
+  filterState.innerHTML = '<option value="">All states</option>' + states.map(s => `<option>${esc(s)}</option>`).join("");
+}
+filterCompany.addEventListener("change", () => { filters.company = filterCompany.value; renderProfiles(); });
+filterState.addEventListener("change", () => { filters.state = filterState.value; renderProfiles(); });
+filterEmail.addEventListener("change", () => { filters.hasEmail = filterEmail.checked; renderProfiles(); });
+
+/* ── copy / toast / density ── */
+const toastEl = $("#toast");
+let toastTimer;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1800);
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); return true; } catch { return false; }
+    finally { ta.remove(); }
+  }
+}
+copyEmailsBtn.addEventListener("click", async () => {
+  const emails = [...new Set(viewRows.map(r => r.email).filter(Boolean))];
+  if (!emails.length) return;
+  const ok = await copyText(emails.join("\n"));
+  toast(ok ? `Copied ${emails.length} email${emails.length === 1 ? "" : "s"}` : "Copy blocked by the browser");
+});
+$("#densityBtn").addEventListener("click", () => {
+  const wrap = document.querySelector(".table-wrap");
+  wrap.classList.toggle("compact");
+  toast(wrap.classList.contains("compact") ? "Compact table" : "Comfortable table");
+});
+
+/* ── profile drawer ── */
+const drawerEl = $("#drawer"), drawerBackdrop = $("#backdrop");
+function openDetail(r) {
+  $("#drawerName").textContent = r.name || "—";
+  $("#drawerTitle").textContent = r.title || "";
+  $("#drawerHeadline").textContent = r.headline || "";
+  const email = r.email || "";
+  const emailBtn = $("#drawerEmail");
+  emailBtn.hidden = !email;
+  emailBtn.dataset.email = email;
+  $("#drawerMeta").innerHTML =
+    `<b>Location:</b> ${esc(r.location || "—")}<br>` +
+    (email ? `<b>Email:</b> ${esc(email)}<br>` : "") +
+    `<b>Searched:</b> ${esc(r.search_company || "—")}<br>` +
+    `<b>Scraped:</b> ${esc(r.scraped_at || "—")}`;
+  $("#drawerOpen").href = r.url || "#";
+  drawerEl.classList.add("open");
+  drawerBackdrop.hidden = false;
+  requestAnimationFrame(() => drawerBackdrop.classList.add("show"));
+  $("#drawerClose").focus();
+}
+function closeDetail() {
+  drawerEl.classList.remove("open");
+  drawerBackdrop.classList.remove("show");
+  drawerBackdrop.hidden = true;
+}
+$("#drawerClose").addEventListener("click", closeDetail);
+drawerBackdrop.addEventListener("click", closeDetail);
+$("#drawerEmail").addEventListener("click", async () => {
+  const email = $("#drawerEmail").dataset.email || "";
+  if (!email) return;
+  const ok = await copyText(email);
+  toast(ok ? "Email copied" : "Copy blocked by the browser");
+});
+$("#drawerLink").addEventListener("click", async () => {
+  const url = $("#drawerOpen").getAttribute("href") || "";
+  const ok = await copyText(url);
+  toast(ok ? "Profile link copied" : "Copy blocked by the browser");
+});
+$("#rows").addEventListener("click", e => {
+  if (e.target.closest("a")) return;
+  const tr = e.target.closest("tr[data-idx]");
+  if (tr) openDetail(viewRows[+tr.dataset.idx]);
+});
+$("#rows").addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.matches("tr[data-idx]")) {
+    e.preventDefault();
+    openDetail(viewRows[+e.target.dataset.idx]);
+  }
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDetail(); });
+
+/* ── analytics charts ── */
+const PALETTE = ["#38bdf8", "#0ea5e9", "#6366f1", "#a78bfa", "#34d399", "#fbbf24", "#fb7185", "#f472b6"];
+const STOP_WORDS = new Set(["at", "of", "for", "in", "on", "the", "and", "with", "to", "a", "an", "is", "as", "-"]);
+function barChart(el, entries, empty = "No records yet.") {
+  if (!entries.length) { el.innerHTML = `<p class="chart-empty">${empty}</p>`; return; }
+  const max = Math.max(...entries.map(e => e.v), 1);
+  const rowH = 20, labelW = 118;
+  const svg = `<svg viewBox="0 0 330 ${entries.length * rowH + 6}" role="img">` +
+    entries.map((e, i) => {
+      const y = i * rowH + 4, w = Math.max(2, (e.v / max) * (330 - labelW - 44));
+      return `<rect class="bar-rect" x="${labelW}" y="${y}" width="${w}" height="12" fill="${PALETTE[i % PALETTE.length]}"><title>${esc(e.k)}: ${e.v}</title></rect>` +
+        `<text class="bar-val" x="${labelW + w + 5}" y="${y + 10}">${e.v}</text>` +
+        `<text class="bar-label" x="${labelW - 6}" y="${y + 10}" text-anchor="end">${esc(String(e.k).slice(0, 22))}</text>`;
+    }).join("") + `</svg>`;
+  el.innerHTML = svg;
+}
+function countBy(items) {
+  const m = {};
+  items.forEach(x => { const k = x || "Other"; m[k] = (m[k] || 0) + 1; });
+  return Object.entries(m).map(([k, v]) => ({ k, v })).sort((a, b) => b.v - a.v);
+}
+function topWords(n = 12) {
+  const m = {};
+  RECORDS.forEach(r => (r.title || "").toLowerCase().split(/[^a-z0-9+#.-]+/).forEach(w => {
+    if (w.length > 1 && !STOP_WORDS.has(w)) m[w] = (m[w] || 0) + 1;
+  }));
+  return Object.entries(m).map(([k, v]) => ({ k, v })).sort((a, b) => b.v - a.v).slice(0, n);
+}
+function seniorityOf(title) {
+  const t = (title || "").toLowerCase();
+  if (/\b(ceo|cto|cfo|coo|cmo|cpo|chief)\b/.test(t)) return "C-suite";
+  if (/vice president|\bvp\b/.test(t)) return "VP";
+  if (/\bdirector\b/.test(t)) return "Director";
+  if (/\b(manager|head|lead)\b/.test(t)) return "Manager / Lead";
+  if (/\b(senior|sr\.?|principal|staff)\b/.test(t)) return "Senior / Principal";
+  if (/\b(recruiter|talent|acquisition|sourcer|partner|specialist)\b/.test(t)) return "Recruiting / TA";
+  return "Other";
+}
+function donut(el, legendEl, parts) {
+  const total = parts.reduce((s, p) => s + p.v, 0) || 1;
+  const r = 46, c = 2 * Math.PI * r;
+  let acc = 0;
+  const segs = parts.map((p, i) => {
+    const frac = p.v / total;
+    const dash = `${frac * c} ${c}`;
+    const off = -acc * c;
+    acc += frac;
+    return `<circle r="${r}" cx="60" cy="60" fill="none" stroke="${PALETTE[i % PALETTE.length]}" stroke-width="20" stroke-dasharray="${dash}" stroke-dashoffset="${off}" transform="rotate(-90 60 60)"><title>${esc(p.k)}: ${p.v}</title></circle>`;
+  }).join("");
+  el.innerHTML = `<svg viewBox="0 0 120 120" role="img">${segs}<text x="60" y="64" text-anchor="middle" fill="${PALETTE[0]}" font-size="20" font-weight="800">${total}</text></svg>`;
+  legendEl.innerHTML = parts.map((p, i) => `<div><span class="sw2" style="background:${PALETTE[i % PALETTE.length]}"></span>${esc(p.k)} — <b>${p.v}</b></div>`).join("");
+}
+function renderAnalytics() {
+  if (!RECORDS.length) {
+    ["chartWords", "chartStates", "chartDays", "chartSeniority", "chartCompanies"].forEach(id => $(`#${id}`).innerHTML = '<p class="chart-empty">No records yet.</p>');
+    $("#chartEmails").innerHTML = ""; $("#emailLegend").innerHTML = '<p class="chart-empty">No records yet.</p>';
+    return;
+  }
+  barChart($("#chartWords"), topWords(12));
+  barChart($("#chartStates"), countBy(RECORDS.map(r => stateOf(r.location)).filter(Boolean)));
+  const byDay = {};
+  RECORDS.forEach(r => { const d = (r.scraped_at || "").slice(0, 10); if (d) byDay[d] = (byDay[d] || 0) + 1; });
+  barChart($("#chartDays"), Object.entries(byDay).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => ({ k, v })));
+  barChart($("#chartSeniority"), countBy(RECORDS.map(r => seniorityOf(r.title))));
+  barChart($("#chartCompanies"), countBy(RECORDS.map(r => r.search_company)));
+  const withEmail = RECORDS.filter(r => r.email).length;
+  donut($("#chartEmails"), $("#emailLegend"), [{ k: "with email", v: withEmail }, { k: "no email", v: RECORDS.length - withEmail }]);
+}
 
 /* Export the currently filtered+sorted view as CSV (client-side, no server). */
 function buildCsv(rows) {
@@ -620,31 +870,19 @@ function renderHealth() {
   $("#healthRows").innerHTML = rows;
 }
 
-/* ═══════════ CONFIG ═══════════ */
-function renderConfig() {
-  const items = [
-    ["Mode", "people / jobs / candidates — chosen in the CLI menu (main.py)"],
-    ["Job titles", esc(CFG.job_titles || "—")],
-    ["Location", esc((CFG.location || "—") + (CFG.geo ? ` (GEO_URN ${CFG.geo})` : ""))],
-    ["Output", "<code>output/linkedin_results.xlsx</code> · <code>linkedin_jobs.xlsx</code> · <code>linkedin_candidates.xlsx</code>"],
-    ["Resume match", "<code>resume_parser.py</code> extracts top-5 tech keywords from a PDF/DOCX to drive job searches"],
-    ["Anti-detection", "random delays, session breaks, stealth JS, UA rotation, adaptive throttle, NYC geolocation"],
-  ];
-  $("#configList").innerHTML = items.map(([k, v]) => `<li><b>${esc(k)}:</b> ${v}</li>`).join("");
-  $("#genAt").textContent = GEN_AT;
-}
-
 /* ═══════════ BACK TO TOP ═══════════ */
 const totop = $("#totop");
 window.addEventListener("scroll", () => totop.classList.toggle("show", scrollY > 500), { passive: true });
 totop.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
 
 /* ═══════════ INIT ═══════════ */
+$("#genAt").textContent = GEN_AT;
+populateFilters();
 buildStats();
 renderProfiles();
 renderLog();
 renderHealth();
-renderConfig();
+renderAnalytics();
 animateOverview();
 </script>
 </body>

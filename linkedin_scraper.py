@@ -38,6 +38,22 @@ class LinkedInScraper:
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.playwright = None
+        # Single account from config; supports the login/session code path.
+        self.current_account = {
+            "email": config.LINKEDIN_EMAIL,
+            "password": config.LINKEDIN_PASSWORD,
+        }
+        # URLs already scraped this run (resumed progress included) — avoids
+        # re-scraping the same profile under different titles/companies.
+        self.scraped_urls = set()
+        # Set to "credentials" when LinkedIn rejects the login form, so the
+        # retry loop gives up instead of risking an account lock.
+        self._last_login_error = ""
+        # Proxy rotation state (see _next_proxy).
+        self.current_proxy = None
+        self._proxy_cursor = random.randrange(max(1, len(config.PROXY_LIST)))
+        # Lazy ProxyManager for USE_FREE_PROXIES mode (auto-fetched free proxies).
+        self.proxy_manager = None
 
     # ─────────────────────────────────────────────
     #  BROWSER SETUP & ANTI-BLOCK
@@ -49,9 +65,17 @@ class LinkedInScraper:
 
         proxy_dict = None
         if self.config.PROXY_LIST:
-            proxy_url = random.choice(self.config.PROXY_LIST)
+            proxy_url = self._next_proxy()
             proxy_dict = {"server": proxy_url}
-            logger.info("🛡️  Using proxy server")
+            logger.info(f"🛡️  Using proxy server: {proxy_url}")
+        elif self.config.USE_FREE_PROXIES:
+            await self._ensure_free_proxies()
+            proxy_url = self._next_proxy()
+            if proxy_url:
+                proxy_dict = {"server": proxy_url}
+                logger.info(f"🌐 Using free proxy: {proxy_url}")
+            else:
+                logger.warning("🌐 No free proxy available — using direct connection")
 
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
@@ -70,6 +94,14 @@ class LinkedInScraper:
         user_agent = random.choice(self.config.USER_AGENTS)
         logger.info(f"🕵️  Spoofing UA: {user_agent[:40]}...")
 
+        # Reuse a persisted login session if one exists — the fastest and least
+        # detectable path (no typing, no 2FA on subsequent runs).
+        storage_state = None
+        if self.config.USE_PERSISTENT_SESSION:
+            session_file = self._session_file()
+            if session_file.exists():
+                storage_state = str(session_file)
+
         self.context = await self.browser.new_context(
             user_agent=user_agent,
             viewport={"width": 1920, "height": 1080},
@@ -80,7 +112,8 @@ class LinkedInScraper:
             extra_http_headers={
                 "Accept-Language": "en-US,en;q=0.9",
                 "Accept-Encoding": "gzip, deflate, br",
-            }
+            },
+            storage_state=storage_state,
         )
 
         # Stealth scripts
@@ -115,16 +148,68 @@ class LinkedInScraper:
         # Have to log in again after rotating identity
         await self.login()
 
+    def _next_proxy(self):
+        """
+        Pick the next proxy for a launch/rotation. Source priority:
+          1. config.PROXY_LIST — round-robin, never the same proxy twice in a row
+             (so identity rotation actually changes IPs).
+          2. ProxyManager free-proxy pool (USE_FREE_PROXIES, PROXY_LIST empty).
+        Returns None to use a direct connection.
+        """
+        proxies = self.config.PROXY_LIST
+        if proxies:
+            if len(proxies) > 1:
+                for _ in range(len(proxies)):
+                    candidate = proxies[self._proxy_cursor % len(proxies)]
+                    self._proxy_cursor = (self._proxy_cursor + 1) % len(proxies)
+                    if candidate != self.current_proxy:
+                        self.current_proxy = candidate
+                        return candidate
+            self.current_proxy = proxies[self._proxy_cursor % len(proxies)]
+            return self.current_proxy
+        if self.config.USE_FREE_PROXIES and self.proxy_manager is not None:
+            proxy = self.proxy_manager.get_proxy()
+            if proxy:
+                self.current_proxy = proxy
+                return proxy
+        self.current_proxy = None
+        return None
+
+    async def _ensure_free_proxies(self):
+        """Fetch and test a pool of free proxies when PROXY_LIST is empty and
+        USE_FREE_PROXIES is on. Network work runs off the event loop; results
+        are cached to output/proxies.json for an hour."""
+        if self.proxy_manager is None:
+            from proxy_manager import ProxyManager
+            self.proxy_manager = ProxyManager()
+        if not self.proxy_manager.working_proxies:
+            await asyncio.to_thread(self.proxy_manager.refresh)
+            if not self.proxy_manager.working_proxies:
+                logger.warning("⚠️  No free proxies could be fetched/tested — continuing without a proxy.")
+
+    @staticmethod
+    def _backoff_delay(consecutive_errors: int) -> float:
+        """Exponential backoff with jitter: ~60s * 2^(errors-3), capped at 600s."""
+        capped = min(60 * (2 ** max(consecutive_errors - 3, 0)), 600)
+        return capped * random.uniform(0.8, 1.2)
+
     async def _handle_potential_block(self):
         """Increase delay multipliers and evaluate if identity rotation is needed."""
         self.consecutive_errors += 1
         
         if self.consecutive_errors >= self.config.CONSECUTIVE_ERROR_LIMIT and self.config.ADAPTIVE_THROTTLE:
             logger.warning(f"⚠️  {self.consecutive_errors} consecutive errors. Increasing delays and rotating!")
-            # Take a long adaptive break
-            await human_delay(120, 240)
+            # Exponential backoff that grows with the error streak, then rotate.
+            wait = self._backoff_delay(self.consecutive_errors)
+            logger.info(f"⏳ Adaptive break: {wait:.0f}s (consecutive errors: {self.consecutive_errors})")
+            await human_delay(wait * 0.9, wait * 1.1)
             
             if self.config.ROTATE_USER_AGENT:
+                # Shed the current proxy before rotating — dead proxies are
+                # removed from the free-proxy pool so the list refills.
+                if self.proxy_manager is not None and self.current_proxy:
+                    self.proxy_manager.mark_failed(self.current_proxy)
+                    self.current_proxy = None
                 await self._rotate_identity()
             
             self.consecutive_errors = 0
@@ -138,8 +223,8 @@ class LinkedInScraper:
         if "checkpoint" in current_url or "challenge" in current_url:
             logger.error("🛑 CAPTCHA / Security Checkpoint detected!")
             logger.warning("   Please complete the challenge manually in the browser window.")
-            await asyncio.sleep(60)
-            return True
+            resolved = await self._await_challenge_resolution(self.config.LOGIN_CHALLENGE_TIMEOUT_SECONDS)
+            return not resolved  # still blocked only if the challenge wasn't resolved
             
         # Check for authwall
         content = await self.page.content()
@@ -153,79 +238,153 @@ class LinkedInScraper:
     #  AUTHENTICATION
     # ─────────────────────────────────────────────
 
-    async def login(self) -> bool:
-        """Log in to LinkedIn with human-like behavior and session saving."""
-        logger.info(f"🔐 Attempting login for: {self.current_account['email']}")
+    def _session_file(self) -> Path:
+        """Path to the persisted session file for the current account."""
+        return Path(self.config.SESSION_DIR) / f"session_{self.current_account['email'].replace('@', '_')}.json"
 
+    async def _is_logged_in(self) -> bool:
+        """True if the current page looks like an authenticated LinkedIn page."""
+        url = self.page.url
+        if any(x in url for x in ["feed", "mynetwork", "jobs", "messaging"]):
+            return True
+        try:
+            # The global nav only renders for authenticated sessions.
+            return await self.page.query_selector("nav.global-nav, .global-nav") is not None
+        except Exception:
+            return False
+
+    async def _await_challenge_resolution(self, timeout: int) -> bool:
+        """Poll until a checkpoint / 2FA / verification page resolves (or the
+        timeout elapses). Returns True once the session is authenticated."""
+        logger.warning(f"⚠️  Verification/2FA required — complete it in the browser window (up to {timeout}s)...")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            await asyncio.sleep(5)
+            if await self._is_logged_in():
+                return True
+            url = self.page.url
+            still_blocked = any(x in url for x in ["checkpoint", "challenge", "verification", "authwall"])
+            if not still_blocked:
+                # Left the challenge page — give the feed one last check.
+                if await self._is_logged_in():
+                    return True
+        logger.error("❌ Verification/2FA was not completed in time.")
+        return False
+
+    async def login(self) -> bool:
+        """
+        Log in to LinkedIn. Attack order:
+          1. Restore the persisted session (fast, invisible, no typing).
+          2. If stale, clear cookies and do a human-like fresh login with retries.
+          3. Poll through checkpoint/2FA instead of blind waits, then confirm
+             with a URL + global-nav check before declaring success.
+        """
+        logger.info(f"🔐 Attempting login for: {self.current_account['email']}")
+        session_file = self._session_file()
+
+        # 1) Persisted session restore first.
+        if self.config.USE_PERSISTENT_SESSION and session_file.exists():
+            logger.info("🔑 Restoring persisted session...")
+            try:
+                await self.page.goto(
+                    "https://www.linkedin.com/feed/",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                await human_delay(2, 4)
+                if await self._is_logged_in():
+                    logger.info("✅ Session restored — already logged in.")
+                    return True
+                # Stale session: drop cookies so the fresh login isn't fought by
+                # a half-validated old session.
+                logger.warning("⚠️  Persisted session expired — falling back to fresh login.")
+                await self.context.clear_cookies()
+            except Exception as e:
+                logger.warning(f"⚠️  Session restore failed ({e}); continuing with fresh login.")
+
+        # 2) Fresh login with retries (MAX_RETRIES attempts, growing backoff).
+        max_attempts = max(1, self.config.MAX_RETRIES)
+        for attempt in range(1, max_attempts + 1):
+            if await self._fresh_login():
+                if self.config.USE_PERSISTENT_SESSION:
+                    session_file.parent.mkdir(parents=True, exist_ok=True)
+                    await self.context.storage_state(path=str(session_file))
+                    logger.info(f"💾 Session state saved to {session_file}")
+                return True
+            # Bad credentials won't fix themselves — retrying only risks an account lock.
+            if self._last_login_error == "credentials":
+                return False
+            if attempt < max_attempts:
+                backoff = random.uniform(15, 30) * attempt
+                logger.warning(f"⏳ Login retry {attempt}/{max_attempts} in {backoff:.0f}s...")
+                await asyncio.sleep(backoff)
+        return False
+
+    async def _fresh_login(self) -> bool:
+        """Single human-like login attempt. Returns True on success and records
+        the failure kind in self._last_login_error ("credentials" vs generic)."""
+        self._last_login_error = ""
         try:
             await self.page.goto(
                 "https://www.linkedin.com/login",
                 wait_until="domcontentloaded",
-                timeout=30000
+                timeout=30000,
             )
             await human_delay(3, 5)
 
-            # Already logged in via storage state?
-            if any(x in self.page.url for x in ["feed", "mynetwork", "jobs"]):
-                logger.info("✅ Already logged in (session restored).")
-                return True
-
-            # Type email
             email_input = await self.page.wait_for_selector("#username", timeout=20000)
             await email_input.click()
             await human_delay(0.5, 1.5)
             await self._type_like_human(email_input, self.current_account['email'])
             await human_delay(0.8, 1.5)
 
-            # Type password
             password_input = await self.page.wait_for_selector("#password")
             await password_input.click()
             await human_delay(0.3, 0.8)
             await self._type_like_human(password_input, self.current_account['password'])
             await human_delay(0.5, 1.5)
 
-            # Submit
             await self.page.click('button[type="submit"]')
 
             try:
                 await self.page.wait_for_load_state("domcontentloaded", timeout=20000)
             except Exception:
                 pass
-
             await human_delay(4, 7)
-            
-            # Save storage state immediately after login
-            if self.config.USE_PERSISTENT_SESSION:
-                session_file = Path(self.config.SESSION_DIR) / f"session_{self.current_account['email'].replace('@', '_')}.json"
-                session_file.parent.mkdir(parents=True, exist_ok=True)
-                await self.context.storage_state(path=str(session_file))
-                logger.info(f"💾 Session state saved to {session_file}")
 
-            current_url = self.page.url
-            logger.info(f"   Post-login URL: {current_url}")
-
-            # Handle CAPTCHA / checkpoint
-            if "checkpoint" in current_url or "challenge" in current_url:
-                logger.warning("⚠️  Verification required! Complete it in the browser window.")
-                logger.warning("    You have 60 seconds...")
-                await asyncio.sleep(60)
-                current_url = self.page.url
-
-            # Handle 2FA
-            if "verification" in current_url:
-                logger.warning("⚠️  2FA required. Complete in browser. Waiting 60s...")
-                await asyncio.sleep(60)
-                current_url = self.page.url
-
-            # Success check
-            if any(x in current_url for x in ["feed", "mynetwork", "jobs", "messaging"]):
+            # Fast path: straight to an authenticated page.
+            if await self._is_logged_in():
                 logger.info("✅ Login successful!")
                 return True
 
-            if current_url in ["https://www.linkedin.com/", "https://linkedin.com/"]:
+            url = self.page.url
+            logger.info(f"   Post-login URL: {url}")
+
+            # Credentials rejected — surface LinkedIn's own message instead of guessing.
+            if "#username" in url or ("login" in url and await self.page.query_selector("#error-for-password, .alert, .form__error")):
+                error_text = await self.page.evaluate(
+                    """() => {
+                        const el = document.querySelector('#error-for-password, .alert, .form__error');
+                        return el ? el.textContent.trim() : '';
+                    }"""
+                )
+                logger.error(f"❌ Login rejected by LinkedIn: {error_text or 'check LINKEDIN_EMAIL / LINKEDIN_PASSWORD'}")
+                self._last_login_error = "credentials"
+                return False
+
+            # Checkpoint / 2FA / verification — poll until resolved.
+            if any(x in url for x in ["checkpoint", "challenge", "verification"]):
+                if await self._await_challenge_resolution(self.config.LOGIN_CHALLENGE_TIMEOUT_SECONDS):
+                    logger.info("✅ Login successful (after verification)!")
+                    return True
+                return False
+
+            # Landed on the homepage without a challenge — poke at the feed once.
+            if url.rstrip("/") in ["https://www.linkedin.com", "https://linkedin.com", "https://www.linkedin.com/feed"]:
                 await self.page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
                 await human_delay(2, 4)
-                if "feed" in self.page.url:
+                if await self._is_logged_in():
                     logger.info("✅ Login successful!")
                     return True
 
@@ -397,7 +556,6 @@ class LinkedInScraper:
 
     def _parse_hours_ago(self, text: str) -> int:
         """Parse text like '5 minutes ago' or '2 days ago' into total hours."""
-        import re
         text = text.lower()
         if "just now" in text or "minutes ago" in text or "minute ago" in text:
             return 0
@@ -430,15 +588,14 @@ class LinkedInScraper:
             search_query = f'{skill} AND "{self.config.CANDIDATE_TITLE_FILTER}"'
         else:
             search_query = f'{skill}'
-            
-        encoded_query = search_query.replace(" ", "%20").replace('"', '%22')
-        geo_encoded = f'%5B%22{self.config.GEO_URN}%22%5D'
 
         search_url = (
-            f"https://www.linkedin.com/search/results/people/"
-            f"?keywords={encoded_query}"
-            f"&origin=GLOBAL_SEARCH_HEADER"
-            f"&geoUrn={geo_encoded}"
+            "https://www.linkedin.com/search/results/people/"
+            "?" + urlencode({
+                "keywords": search_query,
+                "origin": "GLOBAL_SEARCH_HEADER",
+                "geoUrn": f'["{self.config.GEO_URN}"]',
+            })
         )
 
         logger.info(f"   👤 Searching Candidates: '{search_query}'")
@@ -506,14 +663,14 @@ class LinkedInScraper:
 
         # Build search query
         search_query = f'"{job_title}" "{company}"'
-        encoded_query = search_query.replace(" ", "%20").replace('"', '%22')
-        geo_encoded = f'%5B%22{self.config.GEO_URN}%22%5D'
 
         search_url = (
-            f"https://www.linkedin.com/search/results/people/"
-            f"?keywords={encoded_query}"
-            f"&origin=GLOBAL_SEARCH_HEADER"
-            f"&geoUrn={geo_encoded}"
+            "https://www.linkedin.com/search/results/people/"
+            "?" + urlencode({
+                "keywords": search_query,
+                "origin": "GLOBAL_SEARCH_HEADER",
+                "geoUrn": f'["{self.config.GEO_URN}"]',
+            })
         )
 
         logger.info(f"   🔍 '{job_title}' at '{company}'")
@@ -601,10 +758,10 @@ class LinkedInScraper:
                 "company":        self._extract_current_company(soup),
                 "headline":       self._extract_headline(soup),
                 "location":       self._extract_location(soup),
-                "about":          self._extract_about(soup),
-                "skills":         self._extract_skills(soup),
-                "experience":     self._extract_experience(soup),
-                "education":      self._extract_education(soup),
+                "about":          self._extract_about(soup) if self.config.SCRAPE_WORK_EXPERIENCE else "",
+                "skills":         self._extract_skills(soup) if self.config.SCRAPE_WORK_EXPERIENCE else "",
+                "experience":     self._extract_experience(soup) if self.config.SCRAPE_WORK_EXPERIENCE else "",
+                "education":      self._extract_education(soup) if self.config.SCRAPE_EDUCATION else "",
                 "email":          self._extract_email(soup),
                 "phone":          self._extract_phone(soup),
                 "connections":    self._extract_connections(soup),
@@ -624,7 +781,12 @@ class LinkedInScraper:
 
         except Exception as e:
             logger.error(f"   ❌ Failed: {profile_url} — {e}")
-            self.failed_urls.append(profile_url)
+            # Keep enough context to retry this profile once at the end of the run.
+            self.failed_urls.append({
+                "url": profile_url,
+                "company": search_company,
+                "title": job_title,
+            })
             return None
 
     def _passes_filter(self, profile: dict) -> bool:
@@ -686,10 +848,32 @@ class LinkedInScraper:
         return ""
 
     def _extract_email(self, soup) -> str:
+        """Find the profile's contact email. Prefers explicit mailto: links,
+        then falls back to scanning page text for a plausible address while
+        filtering out framework/image/site-internal false positives."""
+        # 1) Explicit mailto: links are the most reliable signal.
+        mailto = soup.select_one('a[href^="mailto:"]')
+        if mailto:
+            addr = mailto.get("href", "").replace("mailto:", "").split("?")[0].strip()
+            if addr and "@" in addr:
+                return addr
+
+        # 2) Text scan with aggressive false-positive filtering.
         text = soup.get_text()
         emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', text)
-        filtered = [e for e in emails if "linkedin.com" not in e and "sentry.io" not in e]
-        return filtered[0] if filtered else ""
+        junk_domains = (
+            "linkedin.com", "sentry.io", "example.com", "gstatic.com",
+            "w3.org", "schema.org", "play.google.com", "microsoft.com",
+            "google.com", "github.com", "2x.png", "png", "jpg", "jpeg",
+        )
+        for email in emails:
+            local, _, domain = email.partition("@")
+            if any(j in domain.lower() for j in junk_domains):
+                continue
+            if local.isdigit():  # image hash like 123456789@2x.png
+                continue
+            return email
+        return ""
 
     def _extract_phone(self, soup) -> str:
         text = soup.get_text()
@@ -699,6 +883,89 @@ class LinkedInScraper:
     def _extract_connections(self, soup) -> str:
         el = soup.select_one(".pv-top-card--list.pv-top-card--list-bullet .t-black--light")
         return el.get_text(strip=True) if el else ""
+
+    def _extract_about(self, soup) -> str:
+        section = soup.find("section", {"id": "about"}) or soup.find("section", class_=re.compile(r"pv-about"))
+        if not section:
+            return ""
+        el = section.select_one(".pv-shared-text-with-see-more") or section.select_one(".pv-about__summary-text")
+        return el.get_text(" ", strip=True)[:1000] if el else ""
+
+    def _extract_skills(self, soup) -> str:
+        section = soup.find("section", {"id": "skills"}) or soup.find("section", class_=re.compile(r"pv-skill"))
+        if not section:
+            return ""
+        names = [
+            el.get_text(strip=True)
+            for el in section.select(".pv-skill-category-entity__name-text, .skill-category-entity__name")
+        ]
+        return ", ".join(dict.fromkeys(n for n in names if n))
+
+    def _extract_experience(self, soup) -> str:
+        section = soup.find("section", {"id": "experience"}) or soup.find("section", class_=re.compile(r"pv-experience"))
+        if not section:
+            return ""
+        entries = []
+        for pos in section.select(".pv-position-entity"):
+            title = pos.select_one(".pv-entity__summary-info h3") or pos.select_one(".t-bold")
+            company = pos.select_one(".pv-entity__secondary-title")
+            date_text = ""
+            date_range = pos.select_one(".pv-entity__date-range")
+            if date_range:
+                spans = [s.get_text(strip=True) for s in date_range.find_all("span")]
+                spans = [s for s in spans if s]
+                if len(spans) == 2:
+                    date_text = f"{spans[0]} – {spans[1]}"
+                elif spans:
+                    date_text = spans[0]
+            if title:
+                parts = [title.get_text(strip=True)]
+                if company:
+                    parts.append("at " + company.get_text(strip=True))
+                if date_text:
+                    parts.append(f"({date_text})")
+                entries.append(" ".join(parts))
+        return " | ".join(entries[:10])
+
+    def _extract_education(self, soup) -> str:
+        section = soup.find("section", {"id": "education"}) or soup.find("section", class_=re.compile(r"pv-education"))
+        if not section:
+            return ""
+        entries = []
+        for edu in section.select(".pv-education-entity"):
+            school = edu.select_one(".pv-entity__school-name")
+            degree = edu.select_one(".pv-entity__degree-name") or edu.select_one(".pv-entity__summary-info h3")
+            if school:
+                entries.append((school.get_text(strip=True) + (f" — {degree.get_text(strip=True)}" if degree and degree.get_text(strip=True) else "")))
+        return " | ".join(entries[:6])
+
+    async def _retry_failed_profiles(self) -> int:
+        """
+        One final pass over profiles that failed transiently (timeouts, bad
+        page loads). Each URL not already scraped gets a single fresh attempt.
+        Returns the number of profiles recovered.
+        """
+        pending = [f for f in self.failed_urls if f.get("url") not in self.scraped_urls]
+        if not pending:
+            return 0
+        logger.info(f"🔁 Retrying {len(pending)} failed profile(s) once...")
+        recovered = 0
+        for f in pending:
+            profile = await self.scrape_profile(
+                f["url"], search_company=f.get("company", ""), job_title=f.get("title", "")
+            )
+            if profile:
+                self.results.append(profile)
+                self.scraped_urls.add(f["url"])
+                recovered += 1
+            await human_delay(
+                self.config.MIN_DELAY_BETWEEN_PROFILES,
+                self.config.MAX_DELAY_BETWEEN_PROFILES,
+            )
+        # Keep only the ones that are still genuinely failing.
+        self.failed_urls = [f for f in self.failed_urls if f.get("url") not in self.scraped_urls]
+        logger.info(f"   ↪ Recovered {recovered}, {len(self.failed_urls)} still failing.")
+        return recovered
 
     # ─────────────────────────────────────────────
     #  SESSION MANAGEMENT
@@ -736,6 +1003,8 @@ class LinkedInScraper:
         saved = load_progress(self.config.PROGRESS_FILE)
         self.results = saved.get("results", [])
         completed_keys = set(saved.get("completed_keys", []))
+        # Don't re-scrape profiles already captured in a previous run.
+        self.scraped_urls = {r.get("linkedin_url") for r in self.results if r.get("linkedin_url")}
 
         await self._launch_browser()
 
@@ -762,12 +1031,17 @@ class LinkedInScraper:
                         if not profile_urls:
                             logger.info(f"      No results found.")
                         else:
-                            logger.info(f"      Found {len(profile_urls)} profiles to scrape...")
-                            for j, url in enumerate(profile_urls, 1):
-                                logger.info(f"      [{j}/{url}] Scraping...")
+                            fresh = [u for u in profile_urls if u not in self.scraped_urls]
+                            skipped = len(profile_urls) - len(fresh)
+                            if skipped:
+                                logger.info(f"      Skipped {skipped} already-scraped profile(s)")
+                            logger.info(f"      Found {len(fresh)} new profiles to scrape...")
+                            for j, url in enumerate(fresh, 1):
+                                logger.info(f"      [{j}/{len(fresh)}] Scraping...")
                                 profile = await self.scrape_profile(url, search_company=company, job_title=job_title)
                                 if profile:
                                     self.results.append(profile)
+                                    self.scraped_urls.add(url)
 
                                 await human_delay(
                                     self.config.MIN_DELAY_BETWEEN_PROFILES,
@@ -828,14 +1102,19 @@ class LinkedInScraper:
                     if not profile_urls:
                         logger.info(f"      No results found.")
                     else:
-                        logger.info(f"      Found {len(profile_urls)} candidates to scrape...")
-                        for j, url in enumerate(profile_urls, 1):
-                            logger.info(f"      [{j}/{len(profile_urls)}] Scraping...")
+                        fresh = [u for u in profile_urls if u not in self.scraped_urls]
+                        skipped = len(profile_urls) - len(fresh)
+                        if skipped:
+                            logger.info(f"      Skipped {skipped} already-scraped candidate(s)")
+                        logger.info(f"      Found {len(fresh)} candidates to scrape...")
+                        for j, url in enumerate(fresh, 1):
+                            logger.info(f"      [{j}/{len(fresh)}] Scraping...")
                             # we pass search_company="N/A" because this is pure skill search
                             profile = await self.scrape_profile(url, search_company="N/A", job_title=skill)
                             if profile:
                                 profile['search_skill'] = skill
                                 self.results.append(profile)
+                                self.scraped_urls.add(url)
 
                             await human_delay(
                                 self.config.MIN_DELAY_BETWEEN_PROFILES,
@@ -858,6 +1137,13 @@ class LinkedInScraper:
             logger.info("\n⚠️  Interrupted. Saving progress...")
 
         finally:
+            # One last chance for profiles that failed transiently.
+            if mode in ("people", "candidates") and self.config.RETRY_FAILED_PROFILES:
+                try:
+                    await self._retry_failed_profiles()
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed-URL retry pass errored: {e}")
+
             if self.results:
                 # Decide which export function to use based on mode
                 if mode == "jobs":
@@ -893,4 +1179,4 @@ class LinkedInScraper:
             logger.info(f"   Records saved   : {len(self.results)}")
             if mode != "jobs":
                 logger.info(f"   Failed URLs     : {len(self.failed_urls)}")
-            logger.info(f"   Searches done   : {self.daily_searches} page loads")            logger.info(f"   Searches done   : {self.daily_searches} page loads")
+            logger.info(f"   Searches done   : {self.daily_searches} page loads")

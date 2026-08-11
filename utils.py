@@ -4,10 +4,20 @@ Utility Functions for LinkedIn Scraper
 Helper functions for delays, scrolling, file I/O, and Excel export.
 """
 
-import urllib.request
+import asyncio
 import json
+import logging
+import random
+import urllib.request
+from datetime import datetime
+from pathlib import Path
 
-# ... existing code ...
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
 #  NOTIFICATIONS

@@ -206,6 +206,9 @@ class Config:
     SESSION_DIR: str        = "session/"
     LOG_FILE: str           = "output/scraper.log"
 
+    # Optional webhook (Discord/Slack) notified when a scrape completes. Leave "" to disable.
+    DISCORD_WEBHOOK_URL: str = ""
+
 
     # ══════════════════════════════════════════════
     #  ⏱️  TIMING (Don't lower these — ban risk!)
@@ -217,6 +220,13 @@ class Config:
     MAX_SESSION_BREAK_SECONDS: int    = 180
     BREAK_EVERY_N_REQUESTS: int       = 15
     MAX_PAGES_PER_COMPANY: int        = 5
+
+    # Set True for a quick smoke run on TEST_COMPANIES (2) instead of the full
+    # FORTUNE_500_COMPANIES list (25 × titles = hundreds of searches).
+    USE_TEST_COMPANIES: bool = False
+
+    # Give profiles that failed transiently one final retry pass before export.
+    RETRY_FAILED_PROFILES: bool = True
 
 
     # ══════════════════════════════════════════════
@@ -233,6 +243,10 @@ class Config:
     # Example: ["http://user:pass@proxy1:8080", "http://user:pass@proxy2:8080"]
     PROXY_LIST: List[str] = field(default_factory=lambda: [])
 
+    # When PROXY_LIST is empty, auto-fetch + test FREE proxies (ProxyManager)
+    # and rotate through them. Cached to output/proxies.json for an hour.
+    USE_FREE_PROXIES: bool = False
+
 
     # ══════════════════════════════════════════════
     #  🖥️  BROWSER SETTINGS
@@ -241,6 +255,10 @@ class Config:
     HEADLESS: bool         = False
     MAX_RETRIES: int       = 3
     REQUEST_TIMEOUT_MS: int = 30000
+
+    # How long to keep polling while a checkpoint/2FA/verification page is up
+    # (seconds). Login resolves the moment the challenge is completed — no blind waits.
+    LOGIN_CHALLENGE_TIMEOUT_SECONDS: int = 90
     
     # Save login cookies to avoid logging in every time (highly recommended)
     USE_PERSISTENT_SESSION: bool = True
@@ -253,13 +271,6 @@ class Config:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-    ])
-       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",

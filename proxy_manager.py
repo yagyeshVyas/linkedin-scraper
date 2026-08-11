@@ -161,10 +161,13 @@ class ProxyManager:
 
         logger.info("🔄 Refreshing proxy list...")
 
-        # Try to load from cache first (if less than 30 min old)
+        # Try to load from cache first. _load_cache already checks the cache's
+        # own timestamp, so this works even for brand-new instances (which have
+        # last_refresh=0 and would otherwise refetch every launch).
         cached = self._load_cache()
-        if cached and not force and elapsed < 1800:
+        if cached and not force:
             self.working_proxies = cached
+            self.last_refresh = now
             logger.info(f"📂 Loaded {len(self.working_proxies)} proxies from cache")
             return
 

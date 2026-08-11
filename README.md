@@ -10,6 +10,8 @@
 
 Search LinkedIn for **any job title**, at **any company**, in **any country** — export everything to a clean Excel file with one command. Now with **free auto-rotating proxy support**, a **`--dry-run` smoke mode**, and a **live dashboard** that shows your session health (login state, ban risk, daily search cap) in real time.
 
+![LinkedIn Scraper → live dashboard — animated pipeline](assets/dashboard-demo.gif)
+
 ---
 
 ## ⚠️ Disclaimer

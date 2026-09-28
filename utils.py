@@ -221,7 +221,12 @@ def export_to_excel(results: list, output_path: str) -> str:
     columns_order = [
         "name", "title", "company", "search_company",
         "headline", "location", "email", "phone",
-        "connections", "linkedin_url", "scraped_at"
+        "connections", "connection_count", "followers", "follower_count",
+        "open_to_work", "is_premium",
+        "experience_count", "education_count",
+        "skills", "about", "experience", "education",
+        "certifications", "languages", "honors",
+        "photo_url", "linkedin_url", "scraped_at"
     ]
     # Keep only existing columns
     columns_order = [c for c in columns_order if c in df.columns]
@@ -237,6 +242,21 @@ def export_to_excel(results: list, output_path: str) -> str:
         "email": "Email Address",
         "phone": "Phone",
         "connections": "Connections",
+        "connection_count": "Connections (num)",
+        "followers": "Followers",
+        "follower_count": "Followers (num)",
+        "open_to_work": "Open To Work",
+        "is_premium": "Premium",
+        "experience_count": "Roles Held",
+        "education_count": "Schools",
+        "skills": "Skills",
+        "about": "About Section",
+        "experience": "Work History",
+        "education": "Education",
+        "certifications": "Certifications",
+        "languages": "Languages",
+        "honors": "Honors & Awards",
+        "photo_url": "Photo URL",
         "linkedin_url": "LinkedIn URL",
         "scraped_at": "Scraped At"
     }
@@ -310,6 +330,21 @@ def export_to_excel(results: list, output_path: str) -> str:
         "Email Address": 28,
         "Phone": 16,
         "Connections": 14,
+        "Connections (num)": 16,
+        "Followers": 16,
+        "Followers (num)": 16,
+        "Open To Work": 13,
+        "Premium": 11,
+        "Roles Held": 11,
+        "Schools": 10,
+        "Skills": 40,
+        "About Section": 50,
+        "Work History": 60,
+        "Education": 40,
+        "Certifications": 40,
+        "Languages": 28,
+        "Honors & Awards": 40,
+        "Photo URL": 40,
         "LinkedIn URL": 45,
         "Scraped At": 18,
     }
@@ -442,8 +477,11 @@ def export_candidates_to_excel(results: list, output_path: str) -> str:
     df = pd.DataFrame(results)
 
     columns_order = [
-        "name", "title", "company", "headline", "location", 
-        "search_skill", "about", "skills", "email", "phone", "connections", 
+        "name", "title", "company", "headline", "location",
+        "search_skill", "about", "skills", "email", "phone", "connections",
+        "connection_count", "followers", "follower_count", "open_to_work",
+        "is_premium", "experience_count", "education_count",
+        "experience", "education", "certifications", "languages", "honors",
         "linkedin_url", "scraped_at"
     ]
     columns_order = [c for c in columns_order if c in df.columns]
@@ -454,6 +492,12 @@ def export_candidates_to_excel(results: list, output_path: str) -> str:
         "headline": "LinkedIn Headline", "location": "Location", "search_skill": "Matched Skill",
         "about": "About Section", "skills": "Skills",
         "email": "Email Address", "phone": "Phone", "connections": "Connections",
+        "connection_count": "Connections (num)", "followers": "Followers",
+        "follower_count": "Followers (num)", "open_to_work": "Open To Work",
+        "is_premium": "Premium", "experience_count": "Roles Held",
+        "education_count": "Schools", "experience": "Work History",
+        "education": "Education", "certifications": "Certifications",
+        "languages": "Languages", "honors": "Honors & Awards",
         "linkedin_url": "Profile URL", "scraped_at": "Scraped At"
     }
     df = df.rename(columns=column_names)
@@ -504,10 +548,14 @@ def export_candidates_to_excel(results: list, output_path: str) -> str:
         ws.row_dimensions[row_num].height = 22
 
     widths = {
-        "Candidate Name": 22, "Current Title": 30, "Current Company": 25, 
-        "LinkedIn Headline": 45, "Location": 25, "Matched Skill": 20, 
-        "Email Address": 28, "Phone": 18, "Connections": 15, 
-        "Profile URL": 45, "Scraped At": 18
+        "Candidate Name": 22, "Current Title": 30, "Current Company": 25,
+        "LinkedIn Headline": 45, "Location": 25, "Matched Skill": 20,
+        "Email Address": 28, "Phone": 18, "Connections": 15,
+        "Connections (num)": 16, "Followers": 16, "Followers (num)": 16,
+        "Open To Work": 13, "Premium": 11, "Roles Held": 11, "Schools": 10,
+        "About Section": 50, "Skills": 40, "Work History": 60,
+        "Education": 40, "Certifications": 40, "Languages": 28,
+        "Honors & Awards": 40, "Profile URL": 45, "Scraped At": 18
     }
     for idx, cell in enumerate(ws[1], 1):
         ws.column_dimensions[get_column_letter(idx)].width = widths.get(cell.value, 20)

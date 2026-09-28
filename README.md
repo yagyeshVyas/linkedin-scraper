@@ -49,6 +49,7 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 - 🌍 Filter by **country or city** using LinkedIn's location system
 - 🔄 **Auto-rotating free proxies** — fetches and tests fresh proxies every hour
 - 📊 Export results to a **formatted Excel file** with clickable LinkedIn profile links
+- 🧬 **Deep profile data** — structured work history, education, certifications, languages, honors, followers, open-to-work and premium flags, all from the same page load
 - ♻️ **Auto-resumes** if stopped — progress is saved after every search, duplicate profiles are skipped
 - 🛡️ Built-in **anti-detection** — stealth JS, human delays, session breaks, exponential backoff
 - 🔑 **Smart login** — restores your saved session, retries with backoff, polls through 2FA/checkpoints
@@ -363,14 +364,30 @@ Results saved to `output/linkedin_results.xlsx` with two sheets:
 | Job Title | Their current title |
 | Company (from Profile) | Company listed on their LinkedIn |
 | Searched Company | Company name you searched for |
-| Searched Title | Job title you searched for |
 | LinkedIn Headline | Their full LinkedIn headline |
 | Location | City, State |
 | Email Address | If publicly visible |
 | Phone | If publicly visible |
-| Proxy Used | Which proxy was used (or "direct") |
+| Connections / Connections (num) | "500+ connections" plus the parsed number |
+| Followers / Followers (num) | Follower line plus the parsed number |
+| Open To Work | Detected from the green `#OPEN_TO_WORK` banner |
+| Premium | LinkedIn Premium badge detected |
+| Roles Held / Schools | Counts, for quick screening |
+| Skills | Comma-separated skills |
+| About Section | Their About text |
+| Work History | Flat "Title at Company (dates) \| …" summary |
+| Education | Flat "School — Degree \| …" summary |
+| Certifications | Licenses & certifications |
+| Languages | Languages with proficiency |
+| Honors & Awards | Awards and honors |
+| Photo URL | Profile photo URL |
 | LinkedIn URL | 🔗 Clickable link to their profile |
 | Scraped At | Date and time scraped |
+
+> **Structured data:** the JSON columns `experience_roles` and `education_entries` are also written to
+> `output/progress.json` — one object per role/school with title, company, dates, duration, location
+> and description (or school, degree, field, dates). The flat `Work History` / `Education` columns are
+> **rendered from those same objects**, so the two views can never disagree.
 
 **Sheet 2 — Summary**
 

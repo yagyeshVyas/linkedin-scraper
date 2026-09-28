@@ -439,6 +439,8 @@
             <th class="sortable" data-key="headline">Headline<span class="arrow"></span></th>
             <th class="sortable" data-key="location">Location<span class="arrow"></span></th>
             <th class="sortable" data-key="email">Email<span class="arrow"></span></th>
+            <th class="sortable" data-key="open_to_work">Signal<span class="arrow"></span></th>
+            <th class="sortable" data-key="follower_count">Followers<span class="arrow"></span></th>
             <th class="sortable" data-key="scraped_at">Scraped<span class="arrow"></span></th>
           </tr>
         </thead>
@@ -614,7 +616,9 @@ function renderProfiles() {
       && (!filters.state || stateOf(r.location) === filters.state)
       && (!filters.hasEmail || !!r.email))
     .sort((a, b) => {
-      const av = (a[sortKey] || "").toLowerCase(), bv = (b[sortKey] || "").toLowerCase();
+      // String() coercion keeps sorting safe for boolean/number columns
+      // (followers, connection counts, open-to-work) instead of throwing.
+      const av = String(a[sortKey] ?? "").toLowerCase(), bv = String(b[sortKey] ?? "").toLowerCase();
       return av.localeCompare(bv) * sortDir || (a.name || "").localeCompare(b.name || "");
     });
   viewRows = rows;
@@ -624,7 +628,7 @@ function renderProfiles() {
   csvBtn.disabled = !rows.length;
   copyEmailsBtn.disabled = !rows.length;
   if (!rows.length) {
-    $("#rows").innerHTML = `<tr><td colspan="7"><div class="empty">No profiles match “${esc(q)}”</div></td></tr>`;
+    $("#rows").innerHTML = `<tr><td colspan="9"><div class="empty">No profiles match “${esc(q)}”</div></td></tr>`;
     return;
   }
   const frag = document.createDocumentFragment();
@@ -639,6 +643,8 @@ function renderProfiles() {
       `<td class="headline">${highlight((r.headline || "—").slice(0, 140))}</td>` +
       `<td>${highlight(r.location || "—")}</td>` +
       `<td>${highlight(r.email || "—")}</td>` +
+      `<td>${r.open_to_work ? '<span class="tag">🔓 Open</span>' : (r.is_premium ? '<span class="tag">⭐ Premium</span>' : "—")}</td>` +
+      `<td class="time">${esc(r.followers || (r.follower_count ? r.follower_count.toLocaleString() : "—"))}</td>` +
       `<td class="time">${esc(r.scraped_at || "—")}</td>`;
     frag.appendChild(tr);
   });
@@ -713,10 +719,22 @@ function openDetail(r) {
   const emailBtn = $("#drawerEmail");
   emailBtn.hidden = !email;
   emailBtn.dataset.email = email;
+  // Only render the lines that actually have data, so the drawer stays tidy.
+  const line = (label, value) => (value ? `<b>${label}:</b> ${esc(value)}<br>` : "");
   $("#drawerMeta").innerHTML =
-    `<b>Location:</b> ${esc(r.location || "—")}<br>` +
-    (email ? `<b>Email:</b> ${esc(email)}<br>` : "") +
-    `<b>Searched:</b> ${esc(r.search_company || "—")}<br>` +
+    line("Location", r.location) +
+    line("Email", email) +
+    line("Connections", r.connections) +
+    line("Followers", r.followers) +
+    line("Open to work", r.open_to_work ? "Yes" : "") +
+    line("Premium", r.is_premium ? "Yes" : "") +
+    line("Roles held", r.experience_count) +
+    line("Schools", r.education_count) +
+    line("Skills", r.skills) +
+    line("Certifications", r.certifications) +
+    line("Languages", r.languages) +
+    line("Honors & awards", r.honors) +
+    line("Searched", r.search_company) +
     `<b>Scraped:</b> ${esc(r.scraped_at || "—")}`;
   $("#drawerOpen").href = r.url || "#";
   drawerEl.classList.add("open");
@@ -826,9 +844,10 @@ function renderAnalytics() {
 
 /* Export the currently filtered+sorted view as CSV (client-side, no server). */
 function buildCsv(rows) {
-  const headers = ["Name", "Title", "Searched", "Headline", "Location", "Email", "LinkedIn URL", "Scraped At"];
+  const headers = ["Name", "Title", "Searched", "Headline", "Location", "Email", "Open To Work", "Followers", "LinkedIn URL", "Scraped At"];
   const q = s => '"' + String(s ?? "").replace(/"/g, '""') + '"';
-  const body = rows.map(r => [r.name, r.title, r.search_company, r.headline, r.location, r.email, r.url, r.scraped_at]);
+  const body = rows.map(r => [r.name, r.title, r.search_company, r.headline, r.location, r.email,
+                             r.open_to_work ? "Yes" : "", r.follower_count || "", r.url, r.scraped_at]);
   return [headers, ...body].map(row => row.map(q).join(",")).join("\r\n");
 }
 csvBtn.addEventListener("click", () => {

@@ -33,7 +33,13 @@ MAIN_MODULES = [
 # ─────────────────────────────────────────────
 
 def load_records() -> list:
-    """Load scraped results from output/progress.json ([] if missing or malformed)."""
+    """Load scraped results from output/progress.json ([] if missing or malformed).
+
+    Records store the profile link as ``linkedin_url``, but the dashboard
+    template renders and CSV-exports ``url`` — so normalise it here, otherwise
+    the name link, the drawer's "Open profile" button and the CSV URL column
+    are all blank.
+    """
     path = ROOT / "output" / "progress.json"
     if not path.exists():
         return []
@@ -42,7 +48,12 @@ def load_records() -> list:
         results = data.get("results") if isinstance(data, dict) else None
     except Exception:
         return []
-    return results if isinstance(results, list) else []
+    if not isinstance(results, list):
+        return []
+    for record in results:
+        if isinstance(record, dict) and not record.get("url"):
+            record["url"] = record.get("linkedin_url", "")
+    return results
 
 
 def load_session_health() -> dict:

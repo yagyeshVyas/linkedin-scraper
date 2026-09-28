@@ -53,7 +53,20 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 - `utils.save_progress` writes atomically (temp + `os.replace`) and never raises;
   `utils.load_progress` tolerates missing/corrupt/non-dict files and normalises the legacy
   `completed_companies` key into `completed_keys` (the key `run()` actually reads).
-- Behavioral tests: `test_scraper_fixes.py` (25 tests) and `test_login_flow.py` (5 tests) — run
+- Deep extraction (2026-09): `scrape_profile` now also records structured work history and
+  education plus certifications / languages / honors / followers / open-to-work / premium /
+  photo, all parsed from the ONE page load (no extra requests). Invariant to preserve:
+  `_extract_experience`/`_extract_education` are thin wrappers over `_format_experience(
+  _extract_roles(soup))` / `_format_education(_extract_education_entries(soup))`, so the flat
+  string and the structured `experience_roles`/`education_entries` JSON can never drift. Edit
+  the structured extractor, not the flatteners. `_parse_count` turns "500+"/"1,234"/"10K" into
+  ints. Extend `DEEP_FIXTURE` in the tests, not `FIXTURE`, to cover new fields.
+- The dashboard template renders and CSV-exports `r.url`, but records store `linkedin_url`;
+  `generate_dashboard.load_records()` mirrors it. Profile links silently broke before that
+  normalisation — keep it if you touch either side.
+- The dashboard table's sort coerces with `String(a[key] ?? "")`; without that, sorting any
+  boolean/number column (open_to_work, follower_count, connection_count) throws.
+- Behavioral tests: `test_scraper_fixes.py` (30 tests) and `test_login_flow.py` (5 tests) — run
   both with `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite
   drives the real `login()` against fakes). No pytest in the venv — each file is a plain script
   with a `__main__` runner list; add new tests to that list.

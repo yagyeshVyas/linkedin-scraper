@@ -1158,19 +1158,41 @@ class LinkedInScraper:
 
             soup = BeautifulSoup(await self.page.content(), "html.parser")
 
+            # Parse the heavy sections ONCE and derive both the structured and
+            # flat views from the same result — no repeated DOM walks.
+            deep = self.config.SCRAPE_WORK_EXPERIENCE
+            roles = self._extract_roles(soup) if deep else []
+            education_entries = (
+                self._extract_education_entries(soup) if self.config.SCRAPE_EDUCATION else []
+            )
+
             profile = {
                 "name":           self._extract_name(soup),
                 "title":          self._extract_current_title(soup),
                 "company":        self._extract_current_company(soup),
                 "headline":       self._extract_headline(soup),
                 "location":       self._extract_location(soup),
-                "about":          self._extract_about(soup) if self.config.SCRAPE_WORK_EXPERIENCE else "",
-                "skills":         self._extract_skills(soup) if self.config.SCRAPE_WORK_EXPERIENCE else "",
-                "experience":     self._extract_experience(soup) if self.config.SCRAPE_WORK_EXPERIENCE else "",
-                "education":      self._extract_education(soup) if self.config.SCRAPE_EDUCATION else "",
+                "about":          self._extract_about(soup) if deep else "",
+                "skills":         self._extract_skills(soup) if deep else "",
+                "experience":     self._format_experience(roles),
+                "education":      self._format_education(education_entries),
+                # ── Deeper structured data (same page load, zero extra requests) ──
+                "experience_roles":  json.dumps(roles, ensure_ascii=False) if roles else "",
+                "education_entries": json.dumps(education_entries, ensure_ascii=False) if education_entries else "",
+                "experience_count":  len(roles),
+                "education_count":   len(education_entries),
+                "certifications":    self._extract_certifications(soup) if deep else "",
+                "languages":         self._extract_languages(soup) if deep else "",
+                "honors":            self._extract_honors(soup) if deep else "",
+                "followers":         self._extract_followers(soup),
+                "follower_count":    self._extract_follower_count(soup),
+                "connections":       self._extract_connections(soup),
+                "connection_count":  self._extract_connection_count(soup),
+                "open_to_work":      self._extract_open_to_work(soup),
+                "is_premium":        self._extract_is_premium(soup),
+                "photo_url":         self._extract_photo_url(soup),
                 "email":          self._extract_email(soup),
                 "phone":          self._extract_phone(soup),
-                "connections":    self._extract_connections(soup),
                 "linkedin_url":   profile_url,
                 "search_company": search_company,
                 "searched_title": job_title,
@@ -1288,7 +1310,120 @@ class LinkedInScraper:
 
     def _extract_connections(self, soup) -> str:
         el = soup.select_one(".pv-top-card--list.pv-top-card--list-bullet .t-black--light")
-        return el.get_text(strip=True) if el else ""
+        if el and el.get_text(strip=True):
+            return el.get_text(strip=True)
+        # Fallback: the top card is near the start, so a bounded scan is cheap.
+        for node in soup.find_all(["span", "div"], limit=400):
+            text = node.get_text(" ", strip=True)
+            if text and len(text) < 40 and re.search(r"\bconnections?\b", text, re.I):
+                return text
+        return ""
+
+    def _extract_connection_count(self, soup) -> int:
+        """Numeric connection count ('500+ connections' → 500); 0 if unknown."""
+        return self._parse_count(self._extract_connections(soup))
+
+    def _extract_followers(self, soup) -> str:
+        """Follower line from the top card, e.g. '1,234 followers'."""
+        for node in soup.find_all(["span", "div", "a"]):
+            text = node.get_text(" ", strip=True)
+            if not text or len(text) > 40:
+                continue
+            if re.search(r"\bfollowers?\b", text, re.I):
+                return text
+        return ""
+
+    def _extract_follower_count(self, soup) -> int:
+        return self._parse_count(self._extract_followers(soup))
+
+    def _extract_open_to_work(self, soup) -> bool:
+        """Detect the green #OPEN_TO_WORK banner (image alt, aria-label or class)."""
+        for node in soup.select("img, div"):
+            blob = " ".join(filter(None, [
+                node.get("alt") or "",
+                node.get("aria-label") or "",
+                " ".join(node.get("class") or []),
+                node.get("src") or "",
+            ])).lower()
+            if "open to work" in blob or "open-to-work" in blob or "#open_to_work" in blob:
+                return True
+        return False
+
+    def _extract_is_premium(self, soup) -> bool:
+        """Detect a LinkedIn Premium badge in the top card."""
+        for node in soup.select("span, li, div"):
+            blob = " ".join(filter(None, [
+                node.get("aria-label") or "",
+                " ".join(node.get("class") or []),
+            ])).lower()
+            if "premium" in blob:
+                return True
+        return False
+
+    def _extract_photo_url(self, soup) -> str:
+        """Profile photo URL with the ephemeral query string stripped."""
+        for selector in (
+            ".pv-top-card-profile-picture__image",
+            ".pv-top-card-profile-picture img",
+            "img.profile-photo-edit__preview",
+            ".pv-top-card__photo",
+        ):
+            node = soup.select_one(selector)
+            if node and node.get("src"):
+                return str(node["src"]).split("?")[0]
+        return ""
+
+    def _section_list(self, soup, ids, patterns, item_selectors, limit: int = 8) -> str:
+        """Generic 'section of short entries' reader for certifications,
+        languages and honors/awards — the first selector that yields anything
+        wins, so it survives LinkedIn's periodic class renames."""
+        section = None
+        for section_id in ids:
+            section = soup.find("section", {"id": section_id})
+            if section:
+                break
+        if section is None:
+            for pattern in patterns:
+                section = soup.find("section", class_=re.compile(pattern, re.I))
+                if section:
+                    break
+        if section is None:
+            return ""
+
+        found = []
+        for selector in item_selectors:
+            for node in section.select(selector):
+                text = node.get_text(" ", strip=True)
+                if text and text not in found:
+                    found.append(text)
+            if found:
+                break
+        return " | ".join(found[:limit])
+
+    def _extract_certifications(self, soup) -> str:
+        return self._section_list(
+            soup,
+            ids=("licenses_and_certifications", "certifications"),
+            patterns=(r"certification", r"licenses"),
+            item_selectors=(".pv-certifications__entity", ".t-bold", "h3", "li"),
+        )
+
+    def _extract_languages(self, soup) -> str:
+        return self._section_list(
+            soup,
+            ids=("languages",),
+            patterns=(r"language",),
+            item_selectors=(".pv-language__name", "li", ".t-bold", "h3"),
+            limit=10,
+        )
+
+    def _extract_honors(self, soup) -> str:
+        return self._section_list(
+            soup,
+            ids=("honors_and_awards", "honors", "awards"),
+            patterns=(r"honor", r"award"),
+            item_selectors=("h3", ".t-bold", "li"),
+        )
 
     def _extract_about(self, soup) -> str:
         section = soup.find("section", {"id": "about"}) or soup.find("section", class_=re.compile(r"pv-about"))
@@ -1307,43 +1442,144 @@ class LinkedInScraper:
         ]
         return ", ".join(dict.fromkeys(n for n in names if n))
 
-    def _extract_experience(self, soup) -> str:
-        section = soup.find("section", {"id": "experience"}) or soup.find("section", class_=re.compile(r"pv-experience"))
-        if not section:
-            return ""
-        entries = []
-        for pos in section.select(".pv-position-entity"):
-            title = pos.select_one(".pv-entity__summary-info h3") or pos.select_one(".t-bold")
-            company = pos.select_one(".pv-entity__secondary-title")
-            date_text = ""
-            date_range = pos.select_one(".pv-entity__date-range")
-            if date_range:
-                spans = [s.get_text(strip=True) for s in date_range.find_all("span")]
-                spans = [s for s in spans if s]
-                if len(spans) == 2:
-                    date_text = f"{spans[0]} – {spans[1]}"
-                elif spans:
-                    date_text = spans[0]
-            if title:
-                parts = [title.get_text(strip=True)]
-                if company:
-                    parts.append("at " + company.get_text(strip=True))
-                if date_text:
-                    parts.append(f"({date_text})")
-                entries.append(" ".join(parts))
-        return " | ".join(entries[:10])
+    @staticmethod
+    def _parse_count(value) -> int:
+        """Parse LinkedIn's loosely-formatted counts into an int.
 
-    def _extract_education(self, soup) -> str:
-        section = soup.find("section", {"id": "education"}) or soup.find("section", class_=re.compile(r"pv-education"))
-        if not section:
+        Handles the forms the site actually emits and every one a human might
+        paste: "500+", "1,234", "10K", "2.5M", "12 followers". Returns 0 when
+        there is nothing numeric, so callers never have to guard for None.
+        """
+        if isinstance(value, bool) or value is None:
+            return 0
+        if isinstance(value, int):
+            return value
+        text = str(value).replace(",", "").replace("\u00a0", " ").strip().lower()
+        if not text:
+            return 0
+        match = re.search(r"(\d+(?:\.\d+)?)\s*([km])?", text)
+        if not match:
+            return 0
+        multiplier = {"k": 1_000, "m": 1_000_000}.get(match.group(2) or "", 1)
+        return int(float(match.group(1)) * multiplier)
+
+    @staticmethod
+    def _date_range_from(node, selector: str) -> str:
+        """Read a 'Start – End' pair out of a date container ('' if absent)."""
+        container = node.select_one(selector)
+        if not container:
             return ""
+        spans = [s.get_text(strip=True) for s in container.find_all("span")]
+        spans = [s for s in spans if s]
+        if len(spans) >= 2:
+            return f"{spans[0]} – {spans[1]}"
+        return spans[0] if spans else ""
+
+    def _extract_roles(self, soup, limit: int = 10) -> list:
+        """Structured work history — one dict per role.
+
+        This is the single source of truth for work history: the flat
+        `experience` string is rendered from it, so the structured and flat
+        views can never disagree. Handles both the older one-entity-per-role
+        markup and the newer layout that groups several roles under one company.
+        """
+        section = (soup.find("section", {"id": "experience"})
+                   or soup.find("section", class_=re.compile(r"pv-experience")))
+        if not section:
+            return []
+
+        roles = []
+        for position in section.select(".pv-position-entity"):
+            # Newer markup nests each role of a company inside the entity.
+            nested = position.select(
+                ".pv-entity__position-group-role-item, .pv-entity__position-group-pager li"
+            )
+            company_el = (position.select_one(".pv-entity__secondary-title")
+                          or position.select_one(".pv-entity__company-name"))
+            company = company_el.get_text(strip=True) if company_el else ""
+
+            for node in (nested or [position]):
+                title_el = (node.select_one(".pv-entity__summary-info h3")
+                            or node.select_one(".t-bold")
+                            or node.select_one("h3"))
+                if not title_el:
+                    continue
+                location_el = (node.select_one(".pv-entity__location")
+                               or node.select_one(".pv-entity__location span"))
+                description_el = node.select_one(".pv-entity__description")
+                roles.append({
+                    "title": title_el.get_text(strip=True),
+                    "company": company,
+                    "dates": self._date_range_from(node, ".pv-entity__date-range"),
+                    "duration": (node.select_one(".pv-entity__duration").get_text(strip=True)
+                                 if node.select_one(".pv-entity__duration") else ""),
+                    "location": location_el.get_text(strip=True) if location_el else "",
+                    "description": (description_el.get_text(" ", strip=True)[:600]
+                                    if description_el else ""),
+                })
+                if len(roles) >= limit:
+                    return roles
+        return roles
+
+    @staticmethod
+    def _format_experience(roles: list) -> str:
+        """Render structured roles into the flat 'Title at Company (dates) | …'
+        string, so the flat and structured views can never disagree."""
+        entries = []
+        for role in roles:
+            parts = [role.get("title", "")]
+            if role.get("company"):
+                parts.append("at " + role["company"])
+            if role.get("dates"):
+                parts.append(f"({role['dates']})")
+            entries.append(" ".join(parts).strip())
+        return " | ".join(e for e in entries[:10] if e)
+
+    def _extract_experience(self, soup) -> str:
+        """Flat work-history string, rendered from _extract_roles."""
+        return self._format_experience(self._extract_roles(soup))
+
+    def _extract_education_entries(self, soup, limit: int = 6) -> list:
+        """Structured education — one dict per school (source of truth for the
+        flat `education` string)."""
+        section = (soup.find("section", {"id": "education"})
+                   or soup.find("section", class_=re.compile(r"pv-education")))
+        if not section:
+            return []
         entries = []
         for edu in section.select(".pv-education-entity"):
-            school = edu.select_one(".pv-entity__school-name")
-            degree = edu.select_one(".pv-entity__degree-name") or edu.select_one(".pv-entity__summary-info h3")
-            if school:
-                entries.append((school.get_text(strip=True) + (f" — {degree.get_text(strip=True)}" if degree and degree.get_text(strip=True) else "")))
-        return " | ".join(entries[:6])
+            school_el = edu.select_one(".pv-entity__school-name")
+            if not school_el:
+                continue
+            degree_el = (edu.select_one(".pv-entity__degree-name")
+                         or edu.select_one(".pv-entity__summary-info h3"))
+            field_el = (edu.select_one(".pv-entity__fos")
+                        or edu.select_one(".pv-entity__field-of-study"))
+            entries.append({
+                "school": school_el.get_text(strip=True),
+                "degree": degree_el.get_text(strip=True) if degree_el else "",
+                "field": field_el.get_text(strip=True) if field_el else "",
+                "dates": self._date_range_from(edu, ".pv-entity__dates"),
+            })
+            if len(entries) >= limit:
+                break
+        return entries
+
+    @staticmethod
+    def _format_education(entries: list) -> str:
+        """Render structured education into the flat 'School — Degree' string."""
+        out = []
+        for edu in entries:
+            text = edu.get("school", "")
+            if edu.get("degree"):
+                text += f" — {edu['degree']}"
+            if text.strip():
+                out.append(text)
+        return " | ".join(out[:6])
+
+    def _extract_education(self, soup) -> str:
+        """Flat education string, rendered from _extract_education_entries."""
+        return self._format_education(self._extract_education_entries(soup))
 
     async def _retry_failed_profiles(self) -> int:
         """

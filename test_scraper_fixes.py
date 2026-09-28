@@ -739,6 +739,245 @@ def test_progress_is_atomic_and_corruption_tolerant():
         save_progress(str(blocker / "nested" / "progress.json"), {"results": []})
 
 
+DEEP_FIXTURE = """<html><body>
+<h1 class="text-heading-xlarge">Jane Doe</h1>
+<div class="text-body-medium break-words">Senior Talent Acquisition Partner at Walmart</div>
+<span class="text-body-small inline t-black--light break-words">Bentonville, Arkansas, United States</span>
+<div class="pv-top-card-profile-picture__container">
+  <img class="pv-top-card-profile-picture__image" src="https://media.licdn.com/jane.jpg?e=123&amp;v=beta">
+</div>
+<div class="pv-top-card--list pv-top-card--list-bullet"><span class="t-black--light">500+ connections</span></div>
+<span class="t-black--light">1,234 followers</span>
+<img alt="#OPEN_TO_WORK" src="https://static.licdn.com/open-to-work.png">
+<span aria-label="LinkedIn Premium member" class="premium-badge"></span>
+<section id="experience">
+  <div class="pv-position-entity">
+    <h3 class="t-bold">Senior Talent Acquisition Partner</h3>
+    <div class="pv-entity__secondary-title">Walmart</div>
+    <div class="pv-entity__date-range"><span>Jan 2021</span><span>Present</span></div>
+    <span class="pv-entity__duration">3 yrs 9 mos</span>
+    <span class="pv-entity__location">Bentonville, AR</span>
+    <div class="pv-entity__description">Leads full-cycle recruiting for Walmart Global Tech.</div>
+  </div>
+  <div class="pv-position-entity">
+    <h3 class="t-bold">Technical Recruiter</h3>
+    <div class="pv-entity__secondary-title">Amazon</div>
+    <div class="pv-entity__date-range"><span>Jun 2018</span><span>Dec 2020</span></div>
+  </div>
+</section>
+<section id="education">
+  <div class="pv-education-entity">
+    <h3 class="pv-entity__school-name">University of Arkansas</h3>
+    <div class="pv-entity__degree-name">BS Business</div>
+    <div class="pv-entity__fos">Marketing</div>
+    <div class="pv-entity__dates"><span>2014</span><span>2018</span></div>
+  </div>
+</section>
+<section id="licenses_and_certifications">
+  <div class="pv-certifications__entity">Certified Internet Recruiter (CIR)</div>
+  <div class="pv-certifications__entity">AIRS Certified</div>
+</section>
+<section id="languages">
+  <div class="pv-language__name">English (Native or bilingual)</div>
+  <div class="pv-language__name">Spanish (Limited working)</div>
+</section>
+<section id="honors_and_awards">
+  <h3>Walmart Global Tech Recruiter of the Year</h3>
+</section>
+</body></html>
+"""
+
+
+class StaticPage:
+    """Page stub that always serves the same HTML (no network)."""
+    def __init__(self, html):
+        self.html = html
+        self.url = "https://www.linkedin.com/in/jane-doe"
+
+    async def goto(self, *a, **kw):
+        pass
+
+    async def content(self):
+        return self.html
+
+    async def evaluate(self, *a, **kw):
+        pass
+
+
+def test_parse_count_handles_real_formats():
+    parse = LinkedInScraper._parse_count
+    assert parse("500+ connections") == 500
+    assert parse("1,234 followers") == 1234
+    assert parse("10K") == 10_000
+    assert parse("2.5M") == 2_500_000
+    assert parse("500") == 500
+    # Junk / empty / wrong types must degrade to 0, never raise.
+    assert parse("garbage") == 0
+    assert parse("") == 0
+    assert parse(None) == 0
+    assert parse(True) == 0
+
+
+def test_deep_extractors_on_rich_profile():
+    s = LinkedInScraper(Config())
+    soup = BeautifulSoup(DEEP_FIXTURE, "html.parser")
+
+    roles = s._extract_roles(soup)
+    assert len(roles) == 2, roles
+    assert roles[0]["title"] == "Senior Talent Acquisition Partner"
+    assert roles[0]["company"] == "Walmart"
+    assert roles[0]["dates"] == "Jan 2021 – Present"
+    assert roles[0]["duration"] == "3 yrs 9 mos"
+    assert roles[0]["location"] == "Bentonville, AR"
+    assert "full-cycle recruiting" in roles[0]["description"]
+
+    # The flat and structured views must be rendered from the same source, so
+    # they can never drift apart.
+    assert s._format_experience(roles) == s._extract_experience(soup)
+    assert "Walmart" in s._extract_experience(soup)
+
+    edu = s._extract_education_entries(soup)
+    assert edu[0]["school"] == "University of Arkansas"
+    assert edu[0]["degree"] == "BS Business"
+    assert edu[0]["field"] == "Marketing"
+    assert edu[0]["dates"] == "2014 – 2018"
+    assert s._format_education(edu) == s._extract_education(soup)
+
+    assert s._extract_connections(soup) == "500+ connections"
+    assert s._extract_connection_count(soup) == 500
+    assert s._extract_followers(soup) == "1,234 followers"
+    assert s._extract_follower_count(soup) == 1234
+    assert s._extract_open_to_work(soup) is True
+    assert s._extract_is_premium(soup) is True
+    assert s._extract_photo_url(soup) == "https://media.licdn.com/jane.jpg"
+    assert "Certified Internet Recruiter" in s._extract_certifications(soup)
+    assert "AIRS Certified" in s._extract_certifications(soup)
+    assert "English" in s._extract_languages(soup)
+    assert "Spanish" in s._extract_languages(soup)
+    assert "Recruiter of the Year" in s._extract_honors(soup)
+
+    # A bare page must yield empty/zero values, not exceptions.
+    empty = BeautifulSoup("<html><body></body></html>", "html.parser")
+    assert s._extract_roles(empty) == []
+    assert s._extract_education_entries(empty) == []
+    assert s._extract_connection_count(empty) == 0
+    assert s._extract_follower_count(empty) == 0
+    assert s._extract_open_to_work(empty) is False
+    assert s._extract_is_premium(empty) is False
+    assert s._extract_photo_url(empty) == ""
+    assert s._extract_certifications(empty) == ""
+    assert s._extract_languages(empty) == ""
+    assert s._extract_honors(empty) == ""
+
+
+def test_scrape_profile_returns_deep_schema():
+    import json
+
+    L.human_delay = _noop
+    L.random_scroll = _noop
+    s = LinkedInScraper(Config())
+    s.page = StaticPage(DEEP_FIXTURE)
+
+    prof = asyncio.run(s.scrape_profile(
+        "https://www.linkedin.com/in/jane-doe", search_company="Walmart", job_title="Recruiter"
+    ))
+    assert prof is not None
+
+    expected = [
+        "experience_roles", "education_entries", "experience_count", "education_count",
+        "certifications", "languages", "honors", "followers", "follower_count",
+        "connections", "connection_count", "open_to_work", "is_premium", "photo_url",
+    ]
+    for key in expected:
+        assert key in prof, f"missing new field: {key}"
+
+    assert prof["experience_count"] == 2
+    assert prof["education_count"] == 1
+    assert prof["connection_count"] == 500
+    assert prof["follower_count"] == 1234
+    assert prof["open_to_work"] is True
+    assert prof["is_premium"] is True
+
+    # The JSON columns must round-trip so the Excel/dashboard consumers can use them.
+    roles = json.loads(prof["experience_roles"])
+    assert roles[0]["company"] == "Walmart"
+    assert json.loads(prof["education_entries"])[0]["school"] == "University of Arkansas"
+    assert s._format_experience(roles) == prof["experience"]
+
+
+def test_excel_export_includes_deep_columns():
+    import tempfile
+
+    from openpyxl import load_workbook
+
+    from utils import export_candidates_to_excel, export_to_excel
+
+    base = {
+        "name": "Jane Doe", "title": "Recruiter", "company": "Walmart",
+        "search_company": "Walmart", "search_skill": "Python",
+        "headline": "TA at Walmart", "location": "Bentonville, AR",
+        "email": "jane@walmart.com", "phone": "", "connections": "500+ connections",
+        "connection_count": 500, "followers": "1,234 followers", "follower_count": 1234,
+        "open_to_work": True, "is_premium": False, "experience_count": 2,
+        "education_count": 1, "skills": "ATS, Sourcing", "about": "Hiring",
+        "experience": "Recruiter at Walmart", "education": "Univ of Arkansas",
+        "certifications": "CIR", "languages": "English", "honors": "Award",
+        "photo_url": "https://x/y.jpg",
+        "linkedin_url": "https://www.linkedin.com/in/jane-doe",
+        "scraped_at": "2026-09-27 10:00:00",
+    }
+    must_have = ["Skills", "About Section", "Work History", "Education", "Certifications",
+                 "Languages", "Honors & Awards", "Connections (num)", "Followers",
+                 "Open To Work", "Premium", "Roles Held", "Schools"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        people = export_to_excel([dict(base)], str(Path(tmp) / "people.xlsx"))
+        headers = [c.value for c in load_workbook(people).active[1]]
+        for col in must_have:
+            assert col in headers, f"people export missing column: {col}"
+        assert "LinkedIn URL" in headers
+
+        cands = export_candidates_to_excel([dict(base)], str(Path(tmp) / "cands.xlsx"))
+        cheaders = [c.value for c in load_workbook(cands).active[1]]
+        for col in must_have:
+            assert col in cheaders, f"candidate export missing column: {col}"
+        assert "Profile URL" in cheaders
+
+
+def test_dashboard_exposes_record_url():
+    import json
+    import tempfile
+
+    import generate_dashboard as gd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        old_root = gd.ROOT
+        gd.ROOT = Path(tmp)
+        try:
+            out = Path(tmp) / "output"
+            out.mkdir(parents=True)
+            (out / "progress.json").write_text(json.dumps({
+                "results": [
+                    {"name": "A", "linkedin_url": "https://www.linkedin.com/in/a"},
+                    {"name": "B", "linkedin_url": "", "url": "https://www.linkedin.com/in/b"},
+                ],
+                "completed_keys": [],
+            }), encoding="utf-8")
+            records = gd.load_records()
+            # The template renders r.url — records store linkedin_url, so it must
+            # be mirrored or every profile link and the CSV URL column is blank.
+            assert records[0]["url"] == "https://www.linkedin.com/in/a"
+            assert records[1]["url"] == "https://www.linkedin.com/in/b"
+
+            # Malformed / wrong-typed payloads must degrade to no records.
+            (out / "progress.json").write_text("{oops", encoding="utf-8")
+            assert gd.load_records() == []
+            (out / "progress.json").write_text('{"results": "nope"}', encoding="utf-8")
+            assert gd.load_records() == []
+        finally:
+            gd.ROOT = old_root
+
+
 if __name__ == "__main__":
     for fn in [test_extractors, test_email_filtering, test_hours_ago,
                test_url_encoding, test_init_and_dedup_seeding,
@@ -757,7 +996,12 @@ if __name__ == "__main__":
                test_block_detection_classifies_pages,
                test_recover_from_block_is_bounded,
                test_rotate_identity_teardown_and_failure_paths,
-               test_progress_is_atomic_and_corruption_tolerant]:
+               test_progress_is_atomic_and_corruption_tolerant,
+               test_parse_count_handles_real_formats,
+               test_deep_extractors_on_rich_profile,
+               test_scrape_profile_returns_deep_schema,
+               test_excel_export_includes_deep_columns,
+               test_dashboard_exposes_record_url]:
         fn()
         print(f"PASS {fn.__name__}")
     print("\nAll scraper fix tests passed.")

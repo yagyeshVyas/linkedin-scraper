@@ -61,12 +61,26 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   string and the structured `experience_roles`/`education_entries` JSON can never drift. Edit
   the structured extractor, not the flatteners. `_parse_count` turns "500+"/"1,234"/"10K" into
   ints. Extend `DEEP_FIXTURE` in the tests, not `FIXTURE`, to cover new fields.
+- Second wave of profile depth (2026-09): added volunteer / projects / publications / courses /
+  patents / services / interests / recommendations / websites, badge flags (`is_hiring`,
+  `is_creator`, `verified`), `pronouns`, `public_id`, `banner_url`, plus derived screening
+  metrics (`seniority`, `total_experience_years`, `career_start_year`, `companies_count`,
+  `avg_tenure_months`, `current_tenure_months`, `current_role_duration`, `skills_count`).
+  Almost all new sections reuse `_section_list(soup, ids, patterns, item_selectors)` — add a
+  new section by calling it with the right id rather than hand-rolling a selector chain.
+  `_career_stats` is frozen-time testable because `_now_month_index` is a classmethod the
+  tests monkeypatch; keep it that way. Badge detection MUST stay attribute-only
+  (`_extract_top_card_flag` scans alt/aria/class/src, never visible text) — scanning text makes
+  every profile look like it's hiring, because 'hiring' appears in ordinary About copy.
+- `scrape_profile` tallies empty fields into `self.section_misses` and `_log_section_coverage`
+  prints them at the end of a run (naming fields empty for EVERY profile). That is the
+  intended early-warning signal for LinkedIn selector changes — do not remove it as noise.
 - The dashboard template renders and CSV-exports `r.url`, but records store `linkedin_url`;
   `generate_dashboard.load_records()` mirrors it. Profile links silently broke before that
   normalisation — keep it if you touch either side.
 - The dashboard table's sort coerces with `String(a[key] ?? "")`; without that, sorting any
   boolean/number column (open_to_work, follower_count, connection_count) throws.
-- Behavioral tests: `test_scraper_fixes.py` (30 tests) and `test_login_flow.py` (5 tests) — run
+- Behavioral tests: `test_scraper_fixes.py` (33 tests) and `test_login_flow.py` (5 tests) — run
   both with `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite
   drives the real `login()` against fakes). No pytest in the venv — each file is a plain script
   with a `__main__` runner list; add new tests to that list.

@@ -750,6 +750,43 @@ DEEP_FIXTURE = """<html><body>
 <span class="t-black--light">1,234 followers</span>
 <img alt="#OPEN_TO_WORK" src="https://static.licdn.com/open-to-work.png">
 <span aria-label="LinkedIn Premium member" class="premium-badge"></span>
+<span class="pronouns">(she/her)</span>
+<div class="pv-top-card__cover-img"><img src="https://media.licdn.com/banner.jpg?e=9"></div>
+<img alt="#HIRING" src="https://static.licdn.com/hiring.png">
+<span class="creator-mode"></span>
+<span aria-label="Verified account" class="verified-badge"></span>
+<span>3 recommendations received</span>
+<a href="https://janedoe.example.com/portfolio?ref=li">Portfolio</a>
+<a href="https://www.linkedin.com/in/jane-doe">LinkedIn</a>
+<a href="https://media.licdn.com/logo.png">CDN junk</a>
+<section id="skills">
+  <div class="pv-skill-category-entity__name-text">Talent Sourcing</div>
+  <div class="pv-skill-category-entity__name-text">ATS</div>
+</section>
+<section id="recommendations">
+  <li>Jane is the best recruiter I have worked with.</li>
+</section>
+<section id="volunteering_experience">
+  <li>Career mentor, Girls Who Code</li>
+</section>
+<section id="projects">
+  <li>Built a sourcing automation toolkit</li>
+</section>
+<section id="publications">
+  <li>Sourcing at Scale (2023)</li>
+</section>
+<section id="courses">
+  <li>Advanced Boolean Search</li>
+</section>
+<section id="patents">
+  <li>Automated candidate ranking</li>
+</section>
+<section id="services">
+  <li>Corporate Training</li>
+</section>
+<section id="interests">
+  <li>Walmart</li>
+</section>
 <section id="experience">
   <div class="pv-position-entity">
     <h3 class="t-bold">Senior Talent Acquisition Partner</h3>
@@ -887,10 +924,22 @@ def test_scrape_profile_returns_deep_schema():
         "experience_roles", "education_entries", "experience_count", "education_count",
         "certifications", "languages", "honors", "followers", "follower_count",
         "connections", "connection_count", "open_to_work", "is_premium", "photo_url",
+        # second wave: further sections, identity/badges and derived metrics
+        "volunteer", "projects", "publications", "courses", "patents", "services",
+        "interests", "recommendations", "recommendation_count", "websites",
+        "public_id", "pronouns", "is_hiring", "is_creator", "verified", "banner_url",
+        "seniority", "total_experience_years", "career_start_year", "companies_count",
+        "avg_tenure_months", "current_tenure_months", "current_role_duration", "skills_count",
     ]
     for key in expected:
         assert key in prof, f"missing new field: {key}"
 
+    assert prof["public_id"] == "jane-doe"
+    assert prof["seniority"] == "Senior / Principal"
+    assert prof["skills_count"] == 2
+    assert prof["is_hiring"] is True and prof["is_creator"] is True and prof["verified"] is True
+    assert prof["current_role_duration"] == "3 yrs 9 mos"
+    assert prof["recommendation_count"] == 3
     assert prof["experience_count"] == 2
     assert prof["education_count"] == 1
     assert prof["connection_count"] == 500
@@ -923,12 +972,27 @@ def test_excel_export_includes_deep_columns():
         "experience": "Recruiter at Walmart", "education": "Univ of Arkansas",
         "certifications": "CIR", "languages": "English", "honors": "Award",
         "photo_url": "https://x/y.jpg",
+        "volunteer": "Mentor", "projects": "Toolkit", "publications": "Paper",
+        "courses": "Course", "patents": "Patent", "services": "Training",
+        "interests": "Walmart", "recommendations": "Great", "recommendation_count": 3,
+        "websites": "https://jane.example.com", "banner_url": "https://x/b.jpg",
+        "public_id": "jane-doe", "pronouns": "(she/her)",
+        "is_hiring": True, "is_creator": False, "verified": True,
+        "seniority": "Senior / Principal", "total_experience_years": 8.2,
+        "career_start_year": 2018, "companies_count": 2, "avg_tenure_months": 33,
+        "current_tenure_months": 36, "current_role_duration": "3 yrs 9 mos",
+        "skills_count": 2,
         "linkedin_url": "https://www.linkedin.com/in/jane-doe",
         "scraped_at": "2026-09-27 10:00:00",
     }
     must_have = ["Skills", "About Section", "Work History", "Education", "Certifications",
                  "Languages", "Honors & Awards", "Connections (num)", "Followers",
-                 "Open To Work", "Premium", "Roles Held", "Schools"]
+                 "Open To Work", "Premium", "Roles Held", "Schools",
+                 "Seniority Band", "Years Experience", "Profile ID", "Pronouns",
+                 "Hiring", "Creator", "Verified", "Volunteer", "Projects",
+                 "Publications", "Courses", "Patents", "Services Offered", "Interests",
+                 "Employers", "Avg Tenure (mo)", "Current Tenure (mo)", "Recommendations",
+                 "Websites", "Skills (count)"]
 
     with tempfile.TemporaryDirectory() as tmp:
         people = export_to_excel([dict(base)], str(Path(tmp) / "people.xlsx"))
@@ -978,6 +1042,116 @@ def test_dashboard_exposes_record_url():
             gd.ROOT = old_root
 
 
+def test_career_math_and_derived_fields():
+    """Derived metrics must be exact — a wrong 'years of experience' is worse
+    than none. Time is frozen so the expectations never rot."""
+    original_now = L.LinkedInScraper._now_month_index
+    L.LinkedInScraper._now_month_index = staticmethod(lambda: 2024 * 12 + 0)  # Jan 2024
+    try:
+        month_index = L.LinkedInScraper._month_index
+        assert month_index("Jan 2021") == 2021 * 12
+        assert month_index("2021") == 2021 * 12          # bare year → January
+        assert month_index("December 2019") == 2019 * 12 + 11
+        assert month_index("Present") is None
+        assert month_index("") is None
+        assert month_index("garbage") is None
+
+        s = LinkedInScraper(Config())
+        roles = s._extract_roles(BeautifulSoup(DEEP_FIXTURE, "html.parser"))
+        stats = s._career_stats(roles)
+
+        # Jan 2021 → Jan 2024 = 36 months; Jun 2018 → Dec 2020 = 30 months.
+        assert stats["current_tenure_months"] == 36
+        assert stats["avg_tenure_months"] == 33
+        assert stats["companies_count"] == 2
+        assert stats["career_start_year"] == 2018
+        assert stats["total_experience_years"] == round(
+            (2024 * 12 - (2018 * 12 + 5)) / 12.0, 1
+        )
+
+        # Reversed/garbled ranges must not produce negative durations.
+        weird = s._career_stats([{"dates": "Dec 2020 – Jan 2019", "company": "X"}])
+        assert weird["avg_tenure_months"] >= 0
+        assert s._career_stats([{"dates": "no dates", "company": "X"}])["companies_count"] == 1
+
+        # No roles → all zeros, never an exception.
+        assert s._career_stats([]) == {
+            "total_experience_years": 0.0, "career_start_year": 0,
+            "companies_count": 0, "avg_tenure_months": 0, "current_tenure_months": 0,
+        }
+    finally:
+        L.LinkedInScraper._now_month_index = original_now
+
+    # Seniority bands must match the dashboard's buckets.
+    seniority = LinkedInScraper._seniority_of
+    assert seniority("Chief People Officer") == "C-suite"
+    assert seniority("VP of Sales") == "VP"
+    assert seniority("Director of Talent") == "Director"
+    assert seniority("Recruiting Manager") == "Manager / Lead"
+    assert seniority("Technical Recruiter") == "Recruiting / TA"
+    assert seniority("Data Scientist") == "Other"
+    assert seniority("") == "Other"
+
+
+def test_additional_section_extractors_and_badges():
+    s = LinkedInScraper(Config())
+    soup = BeautifulSoup(DEEP_FIXTURE, "html.parser")
+
+    assert s._extract_public_id("https://www.linkedin.com/in/jane-doe/?trk=x") == "jane-doe"
+    assert s._extract_public_id("") == ""
+    assert s._extract_pronouns(soup) == "(she/her)"
+    assert s._extract_is_hiring(soup) is True
+    assert s._extract_is_creator(soup) is True
+    assert s._extract_verified(soup) is True
+    assert s._extract_banner_url(soup) == "https://media.licdn.com/banner.jpg"
+    assert s._extract_recommendation_count(soup) == 3
+    assert "best recruiter" in s._extract_recommendations(soup)
+    # Only the real external site — LinkedIn and CDN links are filtered out.
+    assert s._extract_websites(soup) == "https://janedoe.example.com/portfolio"
+
+    assert "Girls Who Code" in s._extract_volunteer(soup)
+    assert "sourcing automation" in s._extract_projects(soup)
+    assert "Sourcing at Scale" in s._extract_publications(soup)
+    assert "Boolean" in s._extract_courses(soup)
+    assert "candidate ranking" in s._extract_patents(soup)
+    assert "Corporate Training" in s._extract_services(soup)
+    assert "Walmart" in s._extract_interests(soup)
+
+    # Badges are attribute-only: the words 'hiring'/'verified' in ordinary
+    # visible text must NOT trip them, or every profile looks like it's hiring.
+    text_only = BeautifulSoup(
+        "<html><body><p>Hiring managers and verified badges are mentioned here</p></body></html>",
+        "html.parser",
+    )
+    assert s._extract_is_hiring(text_only) is False
+    assert s._extract_is_creator(text_only) is False
+    assert s._extract_verified(text_only) is False
+
+    empty = BeautifulSoup("<html><body></body></html>", "html.parser")
+    for extractor in (s._extract_volunteer, s._extract_projects, s._extract_publications,
+                      s._extract_courses, s._extract_patents, s._extract_services,
+                      s._extract_interests, s._extract_recommendations, s._extract_websites,
+                      s._extract_pronouns, s._extract_banner_url):
+        assert extractor(empty) == "", extractor.__name__
+    assert s._extract_recommendation_count(empty) == 0
+
+
+def test_section_coverage_tracking():
+    """Selector-rot early warning must count misses without ever raising."""
+    s = LinkedInScraper(Config())
+    s._count_section_misses({"title": "Recruiter", "headline": "", "services": ""})
+    assert s.section_misses["headline"] == 1
+    assert s.section_misses["services"] == 1
+    assert "title" not in s.section_misses
+
+    s._count_section_misses({"title": "Recruiter"})
+    assert s.section_misses["headline"] == 2
+
+    # Logging an empty run and a fully-populated run must both be safe.
+    s._log_section_coverage(0)
+    s._log_section_coverage(2)
+
+
 if __name__ == "__main__":
     for fn in [test_extractors, test_email_filtering, test_hours_ago,
                test_url_encoding, test_init_and_dedup_seeding,
@@ -1001,7 +1175,10 @@ if __name__ == "__main__":
                test_deep_extractors_on_rich_profile,
                test_scrape_profile_returns_deep_schema,
                test_excel_export_includes_deep_columns,
-               test_dashboard_exposes_record_url]:
+               test_dashboard_exposes_record_url,
+               test_career_math_and_derived_fields,
+               test_additional_section_extractors_and_badges,
+               test_section_coverage_tracking]:
         fn()
         print(f"PASS {fn.__name__}")
     print("\nAll scraper fix tests passed.")

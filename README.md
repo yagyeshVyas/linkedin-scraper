@@ -49,7 +49,9 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 - 🌍 Filter by **country or city** using LinkedIn's location system
 - 🔄 **Auto-rotating free proxies** — fetches and tests fresh proxies every hour
 - 📊 Export results to a **formatted Excel file** with clickable LinkedIn profile links
-- 🧬 **Deep profile data** — structured work history, education, certifications, languages, honors, followers, open-to-work and premium flags, all from the same page load
+- 🧬 **Deep profile data** — 45+ fields per profile (structured work history, education, certifications, languages, honors, volunteer, projects, publications, courses, patents, services, interests, websites, badges, contact, audience) all from the same page load
+- 📐 **Derived screening metrics** — years of experience, career start year, employer count, average and current tenure, seniority band — computed from the work history, no extra scraping
+- 🧩 **Selector-rot early warning** — the run summary names any field that came back empty for every profile, so a LinkedIn markup change is visible instead of silently exporting blanks
 - ♻️ **Auto-resumes** if stopped — progress is saved after every search, duplicate profiles are skipped
 - 🛡️ Built-in **anti-detection** — stealth JS, human delays, session breaks, exponential backoff
 - 🔑 **Smart login** — restores your saved session, retries with backoff, polls through 2FA/checkpoints
@@ -380,9 +382,25 @@ Results saved to `output/linkedin_results.xlsx` with two sheets:
 | Certifications | Licenses & certifications |
 | Languages | Languages with proficiency |
 | Honors & Awards | Awards and honors |
-| Photo URL | Profile photo URL |
+| Volunteer / Projects / Publications / Courses / Patents | Those profile sections, when present |
+| Services Offered | Services the person offers (consulting, training, …) |
+| Interests | Companies, groups and schools they follow |
+| Websites | External links (portfolio, personal site) — LinkedIn/CDN links filtered out |
+| Seniority Band | C-suite / VP / Director / Manager-Lead / Senior-Principal / Recruiting-TA / Other |
+| Years Experience | Earliest role start → today, in years (derived) |
+| Career Start Year | Year of the earliest listed role |
+| Employers | Distinct employers across all listed roles |
+| Avg Tenure (mo) / Current Tenure (mo) | Mean role length, and months in the current role |
+| Hiring / Creator / Verified | Top-card badges (detected from LinkedIn's own markers, not page text) |
+| Pronouns | As shown next to the name |
+| Profile ID | LinkedIn's public identifier from the URL |
+| Photo URL / Banner URL | Profile photo and cover image |
 | LinkedIn URL | 🔗 Clickable link to their profile |
 | Scraped At | Date and time scraped |
+
+> **About the derived metrics:** `Years Experience` is *earliest role start → today*, so it includes career
+> gaps. `Avg Tenure` is the mean of the role durations LinkedIn shows. Both are labelled as estimates,
+> not facts — always confirm before making a hiring decision.
 
 > **Structured data:** the JSON columns `experience_roles` and `education_entries` are also written to
 > `output/progress.json` — one object per role/school with title, company, dates, duration, location

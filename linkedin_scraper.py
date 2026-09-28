@@ -88,6 +88,22 @@ _FINGERPRINTS = [
     },
 ]
 
+# Month name → 1-12, for turning LinkedIn's loose date strings ("Jan 2021",
+# "2021", "Present") into something we can do arithmetic on.
+_MONTH_NAMES = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+# Sections worth watching for selector rot. Counted as empty misses during a
+# run and reported in the final summary, so a LinkedIn markup change shows up
+# as a clear warning instead of silently exporting blank columns.
+_TRACKED_SECTIONS = (
+    "title", "headline", "location", "about", "skills",
+    "experience_roles", "education_entries", "certifications", "languages",
+    "honors", "followers", "connections", "photo_url", "websites", "services",
+)
+
 
 class LinkedInScraper:
     """
@@ -124,6 +140,9 @@ class LinkedInScraper:
         # Why the last _check_page_block_status() call called it blocked
         # ("authwall" / "rate_limit" / "captcha" / "checkpoint").
         self._block_reason = ""
+        # How many profiles came back empty for each tracked field — surfaced in
+        # the final summary as an early warning for LinkedIn selector changes.
+        self.section_misses = {}
         # Proxy rotation state (see _next_proxy).
         self.current_proxy = None
         self._proxy_cursor = random.randrange(max(1, len(config.PROXY_LIST)))
@@ -1166,14 +1185,18 @@ class LinkedInScraper:
                 self._extract_education_entries(soup) if self.config.SCRAPE_EDUCATION else []
             )
 
+            title = self._extract_current_title(soup)
+            skills_text = self._extract_skills(soup) if deep else ""
+            career = self._career_stats(roles)
+
             profile = {
                 "name":           self._extract_name(soup),
-                "title":          self._extract_current_title(soup),
+                "title":          title,
                 "company":        self._extract_current_company(soup),
                 "headline":       self._extract_headline(soup),
                 "location":       self._extract_location(soup),
                 "about":          self._extract_about(soup) if deep else "",
-                "skills":         self._extract_skills(soup) if deep else "",
+                "skills":         skills_text,
                 "experience":     self._format_experience(roles),
                 "education":      self._format_education(education_entries),
                 # ── Deeper structured data (same page load, zero extra requests) ──
@@ -1181,16 +1204,44 @@ class LinkedInScraper:
                 "education_entries": json.dumps(education_entries, ensure_ascii=False) if education_entries else "",
                 "experience_count":  len(roles),
                 "education_count":   len(education_entries),
+                "skills_count":      len([s for s in skills_text.split(",") if s.strip()]),
                 "certifications":    self._extract_certifications(soup) if deep else "",
                 "languages":         self._extract_languages(soup) if deep else "",
                 "honors":            self._extract_honors(soup) if deep else "",
+                # ── Further sections ──
+                "volunteer":         self._extract_volunteer(soup) if deep else "",
+                "projects":          self._extract_projects(soup) if deep else "",
+                "publications":      self._extract_publications(soup) if deep else "",
+                "courses":           self._extract_courses(soup) if deep else "",
+                "patents":           self._extract_patents(soup) if deep else "",
+                "services":          self._extract_services(soup) if deep else "",
+                "interests":         self._extract_interests(soup) if deep else "",
+                "recommendations":   self._extract_recommendations(soup),
+                "recommendation_count": self._extract_recommendation_count(soup),
+                "websites":          self._extract_websites(soup),
+                # ── Identity / badges ──
+                "public_id":         self._extract_public_id(profile_url),
+                "pronouns":          self._extract_pronouns(soup),
+                "is_hiring":         self._extract_is_hiring(soup),
+                "is_creator":        self._extract_is_creator(soup),
+                "verified":          self._extract_verified(soup),
+                "banner_url":        self._extract_banner_url(soup),
+                "photo_url":         self._extract_photo_url(soup),
+                # ── Counts & audience ──
                 "followers":         self._extract_followers(soup),
                 "follower_count":    self._extract_follower_count(soup),
                 "connections":       self._extract_connections(soup),
                 "connection_count":  self._extract_connection_count(soup),
                 "open_to_work":      self._extract_open_to_work(soup),
                 "is_premium":        self._extract_is_premium(soup),
-                "photo_url":         self._extract_photo_url(soup),
+                # ── Derived screening metrics (computed, not scraped) ──
+                "seniority":         self._seniority_of(title),
+                "total_experience_years": career["total_experience_years"],
+                "career_start_year":      career["career_start_year"],
+                "companies_count":        career["companies_count"],
+                "avg_tenure_months":      career["avg_tenure_months"],
+                "current_tenure_months":  career["current_tenure_months"],
+                "current_role_duration":  (roles[0].get("duration", "") if roles else ""),
                 "email":          self._extract_email(soup),
                 "phone":          self._extract_phone(soup),
                 "linkedin_url":   profile_url,
@@ -1198,6 +1249,8 @@ class LinkedInScraper:
                 "searched_title": job_title,
                 "scraped_at":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
+
+            self._count_section_misses(profile)
 
             # Apply keyword filter if configured
             if self._passes_filter(profile):
@@ -1425,6 +1478,175 @@ class LinkedInScraper:
             item_selectors=("h3", ".t-bold", "li"),
         )
 
+    # ── additional profile sections (all same page load) ────────
+
+    def _extract_volunteer(self, soup) -> str:
+        return self._section_list(
+            soup,
+            ids=("volunteering_experience", "volunteer_experience"),
+            patterns=(r"volunteer",),
+            item_selectors=("li", "h3", ".t-bold"),
+        )
+
+    def _extract_projects(self, soup) -> str:
+        return self._section_list(
+            soup,
+            ids=("projects", "project_experience"),
+            patterns=(r"project",),
+            item_selectors=("li", "h3", ".t-bold"),
+        )
+
+    def _extract_publications(self, soup) -> str:
+        return self._section_list(
+            soup,
+            ids=("publications",),
+            patterns=(r"publication",),
+            item_selectors=("li", "h3", ".t-bold"),
+        )
+
+    def _extract_courses(self, soup) -> str:
+        return self._section_list(
+            soup,
+            ids=("courses", "course"),
+            patterns=(r"course",),
+            item_selectors=("li", "h3", ".t-bold"),
+            limit=10,
+        )
+
+    def _extract_patents(self, soup) -> str:
+        return self._section_list(
+            soup,
+            ids=("patents", "patents_and_inventors"),
+            patterns=(r"patent",),
+            item_selectors=("li", "h3", ".t-bold"),
+        )
+
+    def _extract_services(self, soup) -> str:
+        """'Services offered' — how a freelancer/consultant wants to be hired."""
+        return self._section_list(
+            soup,
+            ids=("services", "service_category"),
+            patterns=(r"service",),
+            item_selectors=(".pv-service__name", "li", ".t-bold", "h3"),
+            limit=10,
+        )
+
+    def _extract_interests(self, soup) -> str:
+        """Companies / groups / schools the person follows."""
+        return self._section_list(
+            soup,
+            ids=("interests",),
+            patterns=(r"interest",),
+            item_selectors=(".pv-interest-entity", ".t-bold", "h3", "li"),
+            limit=12,
+        )
+
+    def _extract_recommendations(self, soup) -> str:
+        """Recommendation snippets (may be gated behind a click — '' is normal)."""
+        return self._section_list(
+            soup,
+            ids=("recommendations", "recommendation"),
+            patterns=(r"recommendation",),
+            item_selectors=(".pv-recommendation-entity", "li"),
+            limit=6,
+        )
+
+    def _extract_recommendation_count(self, soup) -> int:
+        """Parse the top-card '3 recommendations received' counter."""
+        text = soup.get_text(" ", strip=True)
+        match = re.search(r"(\d[\d,]*\+?)\s+recommendations?", text, re.I)
+        return self._parse_count(match.group(1)) if match else 0
+
+    def _extract_websites(self, soup) -> str:
+        """External links (portfolio, personal site, GitHub) shown on the profile.
+
+        Deliberately filters LinkedIn/CDN/asset hosts so the column stays useful
+        instead of filling up with CDN and deep-link noise.
+        """
+        junk = (
+            "linkedin.com", "licdn.com", "lnkd.in", "w3.org", "schema.org",
+            "gstatic.com", "google.com", "microsoft.com", "wikipedia.org",
+            "sentry.io", "javascript:", "mailto:", "tel:",
+        )
+        asset_tail = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js", ".ico")
+        found = []
+        for anchor in soup.find_all("a", href=True):
+            href = str(anchor["href"]).strip()
+            if not href.lower().startswith(("http://", "https://")):
+                continue
+            lowered = href.lower()
+            if any(token in lowered for token in junk):
+                continue
+            if lowered.split("?")[0].endswith(asset_tail):
+                continue
+            # Skip redirect wrappers; keep the real destination.
+            match = re.search(r"[?&]url=([^&]+)", href)
+            if match:
+                from urllib.parse import unquote
+                href = unquote(match.group(1))
+                lowered = href.lower()
+                if any(token in lowered for token in junk):
+                    continue
+            clean = href.split("?")[0].rstrip("/")
+            if clean and clean not in found:
+                found.append(clean)
+            if len(found) >= 5:
+                break
+        return " | ".join(found)
+
+    def _extract_pronouns(self, soup) -> str:
+        """Pronouns shown next to the name, e.g. '(she/her)'."""
+        for node in soup.select('[class*="pronoun" i], [aria-label*="pronoun" i]'):
+            text = node.get_text(" ", strip=True)
+            if text and len(text) <= 30:
+                return text
+        # Fallback: a short parenthetical with a slash near the top of the page.
+        for node in soup.find_all(["span", "div"], limit=300):
+            text = node.get_text(" ", strip=True)
+            if text and len(text) <= 24 and re.fullmatch(r"\([A-Za-z]+\s*/\s*[A-Za-z]+(?:\s*-\s*[A-Za-z]+)?\)", text):
+                return text
+        return ""
+
+    def _extract_top_card_flag(self, soup, tokens: tuple) -> bool:
+        """Detect a top-card badge by scanning ONLY attribute/class blobs.
+
+        Scanning visible text here would false-positive constantly — the word
+        "hiring" appears in ordinary About text — so this is intentionally
+        restricted to markers LinkedIn renders for the badge itself.
+        """
+        for node in soup.select("img, div, span"):
+            blob = " ".join(filter(None, [
+                node.get("alt") or "",
+                node.get("aria-label") or "",
+                " ".join(node.get("class") or []),
+                node.get("src") or "",
+            ])).lower()
+            if any(token in blob for token in tokens):
+                return True
+        return False
+
+    def _extract_is_hiring(self, soup) -> bool:
+        """The green #HIRING banner (very relevant for recruiter research)."""
+        return self._extract_top_card_flag(soup, ("#hiring", "open-to-hiring", "hiring-badge"))
+
+    def _extract_is_creator(self, soup) -> bool:
+        return self._extract_top_card_flag(soup, ("creator-mode", "creator_mode", "creator-badge"))
+
+    def _extract_verified(self, soup) -> bool:
+        return self._extract_top_card_flag(soup, ("verified"))
+
+    def _extract_banner_url(self, soup) -> str:
+        """Background/cover image URL, query string stripped."""
+        for selector in (
+            ".pv-top-card__cover-img img",
+            ".profile-background-image img",
+            ".pv-top-card--background-image img",
+        ):
+            node = soup.select_one(selector)
+            if node and node.get("src"):
+                return str(node["src"]).split("?")[0]
+        return ""
+
     def _extract_about(self, soup) -> str:
         section = soup.find("section", {"id": "about"}) or soup.find("section", class_=re.compile(r"pv-about"))
         if not section:
@@ -1474,6 +1696,150 @@ class LinkedInScraper:
         if len(spans) >= 2:
             return f"{spans[0]} – {spans[1]}"
         return spans[0] if spans else ""
+
+    # ── derived career analytics ────────────────────────────────
+
+    @staticmethod
+    def _month_index(text: str) -> Optional[int]:
+        """'Jan 2021' → 24252 (year*12+month-1). None for '' / 'Present'.
+
+        Used only for computing durations, never stored as a field.
+        """
+        if not text:
+            return None
+        lowered = text.strip().lower()
+        if "present" in lowered or "current" in lowered or "now" == lowered:
+            return None
+        year_match = re.search(r"(?:19|20)\d{2}", lowered)
+        if not year_match:
+            return None
+        year = int(year_match.group(0))
+        month = 1
+        for name, number in _MONTH_NAMES.items():
+            if name in lowered:
+                month = number
+                break
+        return year * 12 + (month - 1)
+
+    @staticmethod
+    def _now_month_index() -> int:
+        today = datetime.now()
+        return today.year * 12 + (today.month - 1)
+
+    @classmethod
+    def _career_stats(cls, roles: list) -> dict:
+        """Screening metrics derived from structured roles.
+
+        Definitions are deliberately explicit so nobody has to guess:
+          total_experience_years — earliest role start → now, in years
+          career_start_year      — year of the earliest role start
+          companies_count        — distinct employers across all listed roles
+          avg_tenure_months      — mean months per role
+          current_tenure_months  — months in the role listed as current
+        """
+        stats = {
+            "total_experience_years": 0.0,
+            "career_start_year": 0,
+            "companies_count": 0,
+            "avg_tenure_months": 0,
+            "current_tenure_months": 0,
+        }
+        if not roles:
+            return stats
+
+        now_index = cls._now_month_index()
+        starts, durations, companies = [], [], []
+        current_duration = 0
+
+        for role in roles:
+            # Employer count must not depend on whether the dates parse.
+            company = (role.get("company") or "").strip().lower()
+            if company:
+                companies.append(company)
+
+            dates = role.get("dates") or ""
+            start_text, _, end_text = dates.partition("–")
+            start = cls._month_index(start_text)
+            if start is None:
+                continue
+            # "Present" (and anything unparseable as an end) means still running.
+            end = cls._month_index(end_text)
+            is_current = end is None
+            if is_current:
+                end = now_index
+            if end < start:  # guard against reversed/typo'd ranges
+                end = start
+            starts.append(start)
+            durations.append(end - start)
+            if is_current:
+                current_duration = end - start
+
+        if starts:
+            stats["career_start_year"] = min(starts) // 12
+            stats["total_experience_years"] = round((now_index - min(starts)) / 12.0, 1)
+            stats["avg_tenure_months"] = int(round(sum(durations) / len(durations)))
+            stats["current_tenure_months"] = current_duration
+        stats["companies_count"] = len(set(companies))
+        return stats
+
+    @staticmethod
+    def _seniority_of(title: str) -> str:
+        """Bucket a title into a seniority band — same bands the dashboard uses."""
+        text = (title or "").lower()
+        if re.search(r"\b(ceo|cto|cfo|coo|cmo|cpo|chief)\b", text):
+            return "C-suite"
+        if re.search(r"vice president|\bvp\b", text):
+            return "VP"
+        if re.search(r"\bdirector\b", text):
+            return "Director"
+        if re.search(r"\b(manager|head|lead)\b", text):
+            return "Manager / Lead"
+        if re.search(r"\b(senior|sr\.?|principal|staff)\b", text):
+            return "Senior / Principal"
+        if re.search(r"\b(recruiter|talent|acquisition|sourcer|partner|specialist)\b", text):
+            return "Recruiting / TA"
+        return "Other"
+
+    @staticmethod
+    def _extract_public_id(profile_url: str) -> str:
+        """LinkedIn's public identifier from a profile URL (/in/<id>)."""
+        match = re.search(r"/in/([^/?#]+)", profile_url or "")
+        return match.group(1) if match else ""
+
+    def _count_section_misses(self, profile: dict) -> None:
+        """Tally which tracked fields came back empty for this profile."""
+        for field in _TRACKED_SECTIONS:
+            if not profile.get(field):
+                self.section_misses[field] = self.section_misses.get(field, 0) + 1
+
+    def _log_section_coverage(self, total: int) -> None:
+        """Report which fields were empty across the run.
+
+        LinkedIn reshuffles its markup periodically. Rather than let a broken
+        selector quietly export a blank column forever, this turns it into an
+        explicit warning naming the fields to fix.
+        """
+        if not total:
+            return
+        missing = sorted(
+            ((field, count) for field, count in self.section_misses.items() if count),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        if not missing:
+            logger.info("🧩 Selector coverage: every tracked field was populated.")
+            return
+
+        logger.info(
+            "🧩 Selector coverage: "
+            + ", ".join(f"{field} {count}/{total} empty" for field, count in missing)
+        )
+        always_empty = [field for field, count in missing if count >= total]
+        if always_empty:
+            logger.warning(
+                "⚠️  Empty for EVERY profile (likely a markup/selector change): "
+                + ", ".join(always_empty)
+            )
 
     def _extract_roles(self, soup, limit: int = 10) -> list:
         """Structured work history — one dict per role.
@@ -1935,5 +2301,8 @@ class LinkedInScraper:
             if mode != "jobs":
                 logger.info(f"   Failed URLs     : {len(self.failed_urls)}")
             logger.info(f"   Searches done   : {self.daily_searches} page loads")
+
+            # Early warning for LinkedIn selector changes (see _log_section_coverage).
+            self._log_section_coverage(len(self.results))
 
             self._finalize_telemetry(mode, recovered)

@@ -428,6 +428,8 @@
       <select id="filterCompany" aria-label="Filter by company"><option value="">All companies</option></select>
       <select id="filterState" aria-label="Filter by state"><option value="">All states</option></select>
       <label class="check"><input type="checkbox" id="filterEmail"> has email</label>
+      <label class="check"><input type="checkbox" id="filterOpen"> open to work</label>
+      <label class="check"><input type="checkbox" id="filterHiring"> hiring</label>
     </div>
     <div class="table-wrap">
       <table>
@@ -441,6 +443,7 @@
             <th class="sortable" data-key="email">Email<span class="arrow"></span></th>
             <th class="sortable" data-key="open_to_work">Signal<span class="arrow"></span></th>
             <th class="sortable" data-key="follower_count">Followers<span class="arrow"></span></th>
+            <th class="sortable" data-key="total_experience_years">Years<span class="arrow"></span></th>
             <th class="sortable" data-key="scraped_at">Scraped<span class="arrow"></span></th>
           </tr>
         </thead>
@@ -508,7 +511,7 @@ const RECORDS = [{"name": "Sydney Golub", "headline": "Corporate Recruiting at W
 const LOG_RAW = "2026-03-01 16:04:02 [INFO]    [41/51] Scraping profile...\n2026-03-01 16:04:23 [INFO]    [42/51] Scraping profile...\n2026-03-01 16:04:35 [INFO]    ✅ Scraped: Will Jameson | Senior Executive Recruiter | \n2026-03-01 16:04:46 [INFO]    [43/51] Scraping profile...\n2026-03-01 16:04:54 [INFO]    ✅ Scraped: Sunnia N. | Technical Recruiter @ Amazon 👩🏻‍💻 | \n2026-03-01 16:05:06 [INFO]    [44/51] Scraping profile...\n2026-03-01 16:05:15 [INFO]    ✅ Scraped: Neethi B. | Talent Acquisition @ Amazon | \n2026-03-01 16:05:24 [INFO]    [45/51] Scraping profile...\n2026-03-01 16:05:35 [INFO]    ✅ Scraped: Matt Iorio | Recruiter with Amazon Talent Acquisition | \n2026-03-01 16:05:44 [INFO] ☕ Taking a 104s session break to avoid detection...\n2026-03-01 16:06:31 [INFO] ✅ Excel file saved: output/linkedin_recruiters.xlsx\n2026-03-01 16:06:31 [INFO] \n🎉 Done! Exported 82 recruiters to: output/linkedin_recruiters.xlsx\n2026-03-01 16:06:32 [INFO] 📊 Summary:\n2026-03-01 16:06:32 [INFO]    Total recruiters found: 82\n2026-03-01 16:06:32 [INFO]    Failed URLs: 0\n2026-03-01 16:06:32 [INFO]    Companies completed: 1/300\n2026-03-14 16:42:20 [INFO] =================================================================\n2026-03-14 16:42:20 [INFO]   LinkedIn Scraper v3.0 — Mode: CANDIDATES\n2026-03-14 16:42:20 [INFO]   Location   : United States\n2026-03-14 16:42:20 [INFO] =================================================================\n2026-03-14 16:42:20 [INFO] 📂 Resumed progress: 46 existing records, 1 companies done\n2026-03-14 16:42:20 [INFO] 🚀 Launching stealth browser...\n2026-03-14 16:42:25 [INFO] 🕵️  Spoofing UA: Mozilla/5.0 (X11; Linux x86_64) AppleWeb...\n2026-03-14 16:42:28 [INFO] ✅ Browser launched successfully.\n2026-03-14 16:42:28 [INFO] 🔐 Attempting LinkedIn login...\n2026-03-14 16:42:51 [INFO]    Post-login URL: https://www.linkedin.com/checkpoint/challenge/AgERNzxQoGPFmwAAAZzuFhp6dPBsfOO0WTt6P-eURETtWrQZCG1dlo-TbgwKrElaIMv-fTVjg8qsktT4Ow-gTa-BtSEHuA?ut=09Tpxa6-Wq1Yc1\n2026-03-14 16:42:51 [WARNING] ⚠️  Verification required! Complete it in the browser window.\n2026-03-14 16:42:51 [WARNING]     You have 60 seconds...\n2026-03-14 16:43:51 [ERROR] ❌ Login failed. URL: https://www.linkedin.com/checkpoint/challenge/AgHaXqZsbHEAdgAAAZzuFqju1MikmXgQ7MPwYNw0SNLZni9k9al0dFL3drgGSzVAPmQIhp2sfpCwYtmdeGDHbkSFy13spA?ut=24FvZjJJ-r1Yc1\n2026-03-14 16:43:51 [ERROR]    Double-check LINKEDIN_EMAIL and LINKEDIN_PASSWORD in config.py\n2026-03-14 16:43:51 [ERROR] ❌ Login failed. Exiting.\n2026-03-14 16:43:51 [INFO] ✅ Candidates Excel file saved: output/linkedin_candidates.xlsx\n2026-03-14 16:43:51 [INFO] \n🎉 Exported 46 records → output/linkedin_candidates.xlsx\n2026-03-14 16:43:52 [INFO] \n📊 Final Summary:\n2026-03-14 16:43:52 [INFO]    Records saved   : 46\n2026-03-14 16:43:52 [INFO]    Failed URLs     : 0\n2026-03-14 16:43:52 [INFO]    Searches done   : 0 page loads";
 const HEALTH  = [{"file": "config.py", "ok": true, "detail": ""}, {"file": "main.py", "ok": true, "detail": ""}, {"file": "main_proxy.py", "ok": true, "detail": ""}, {"file": "linkedin_scraper.py", "ok": true, "detail": ""}, {"file": "linkedin_scraper_proxy.py", "ok": true, "detail": ""}, {"file": "proxy_manager.py", "ok": true, "detail": ""}, {"file": "utils.py", "ok": true, "detail": ""}, {"file": "resume_parser.py", "ok": true, "detail": ""}];
 const SESSION_HEALTH = {};
-const GEN_AT  = "2026-09-27 21:11:06";
+const GEN_AT  = "2026-09-27 21:17:02";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -614,7 +617,9 @@ function renderProfiles() {
     .filter(r => (!q || [r.name, r.title, r.search_company, r.headline, r.location, r.email].some(v => (v || "").toLowerCase().includes(q)))
       && (!filters.company || r.search_company === filters.company)
       && (!filters.state || stateOf(r.location) === filters.state)
-      && (!filters.hasEmail || !!r.email))
+      && (!filters.hasEmail || !!r.email)
+      && (!filters.openToWork || !!r.open_to_work)
+      && (!filters.hiring || !!r.is_hiring))
     .sort((a, b) => {
       // String() coercion keeps sorting safe for boolean/number columns
       // (followers, connection counts, open-to-work) instead of throwing.
@@ -628,7 +633,7 @@ function renderProfiles() {
   csvBtn.disabled = !rows.length;
   copyEmailsBtn.disabled = !rows.length;
   if (!rows.length) {
-    $("#rows").innerHTML = `<tr><td colspan="9"><div class="empty">No profiles match “${esc(q)}”</div></td></tr>`;
+    $("#rows").innerHTML = `<tr><td colspan="10"><div class="empty">No profiles match “${esc(q)}”</div></td></tr>`;
     return;
   }
   const frag = document.createDocumentFragment();
@@ -645,6 +650,7 @@ function renderProfiles() {
       `<td>${highlight(r.email || "—")}</td>` +
       `<td>${r.open_to_work ? '<span class="tag">🔓 Open</span>' : (r.is_premium ? '<span class="tag">⭐ Premium</span>' : "—")}</td>` +
       `<td class="time">${esc(r.followers || (r.follower_count ? r.follower_count.toLocaleString() : "—"))}</td>` +
+      `<td class="time">${esc(r.total_experience_years || "—")}</td>` +
       `<td class="time">${esc(r.scraped_at || "—")}</td>`;
     frag.appendChild(tr);
   });
@@ -659,8 +665,9 @@ $("#search").addEventListener("input", e => {
 clearBtn.addEventListener("click", () => { $("#search").value = ""; query = ""; renderProfiles(); $("#search").focus(); });
 
 /* ── structured filters ── */
-const filters = { company: "", state: "", hasEmail: false };
+const filters = { company: "", state: "", hasEmail: false, openToWork: false, hiring: false };
 const filterCompany = $("#filterCompany"), filterState = $("#filterState"), filterEmail = $("#filterEmail");
+const filterOpen = $("#filterOpen"), filterHiring = $("#filterHiring");
 const copyEmailsBtn = $("#copyEmailsBtn");
 function stateOf(location) {
   const parts = (location || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -677,6 +684,8 @@ function populateFilters() {
 filterCompany.addEventListener("change", () => { filters.company = filterCompany.value; renderProfiles(); });
 filterState.addEventListener("change", () => { filters.state = filterState.value; renderProfiles(); });
 filterEmail.addEventListener("change", () => { filters.hasEmail = filterEmail.checked; renderProfiles(); });
+filterOpen.addEventListener("change", () => { filters.openToWork = filterOpen.checked; renderProfiles(); });
+filterHiring.addEventListener("change", () => { filters.hiring = filterHiring.checked; renderProfiles(); });
 
 /* ── copy / toast / density ── */
 const toastEl = $("#toast");
@@ -721,20 +730,46 @@ function openDetail(r) {
   emailBtn.dataset.email = email;
   // Only render the lines that actually have data, so the drawer stays tidy.
   const line = (label, value) => (value ? `<b>${label}:</b> ${esc(value)}<br>` : "");
+  const yes = v => (v ? "Yes" : "");
+  const tenure = r.current_tenure_months ? `${r.current_tenure_months} months` : "";
+  const avgTenure = r.avg_tenure_months ? `${r.avg_tenure_months} months` : "";
+  const years = r.total_experience_years ? `${r.total_experience_years} years` : "";
   $("#drawerMeta").innerHTML =
     line("Location", r.location) +
+    line("Pronouns", r.pronouns) +
     line("Email", email) +
+    line("Websites", r.websites) +
+    line("Seniority", r.seniority) +
+    line("Experience", years) +
+    line("Current role", [r.current_role_duration, r.current_tenure_months ? `(${r.current_tenure_months} mo)` : ""].filter(Boolean).join(" ")) +
+    line("Employers", r.companies_count) +
+    line("Avg tenure", avgTenure) +
     line("Connections", r.connections) +
     line("Followers", r.followers) +
-    line("Open to work", r.open_to_work ? "Yes" : "") +
-    line("Premium", r.is_premium ? "Yes" : "") +
+    line("Recommendations", r.recommendation_count) +
+    line("Open to work", yes(r.open_to_work)) +
+    line("Hiring", yes(r.is_hiring)) +
+    line("Premium", yes(r.is_premium)) +
+    line("Creator", yes(r.is_creator)) +
+    line("Verified", yes(r.verified)) +
     line("Roles held", r.experience_count) +
     line("Schools", r.education_count) +
     line("Skills", r.skills) +
+    line("About", r.about) +
+    line("Work history", r.experience) +
+    line("Education", r.education) +
     line("Certifications", r.certifications) +
     line("Languages", r.languages) +
     line("Honors & awards", r.honors) +
+    line("Volunteer", r.volunteer) +
+    line("Projects", r.projects) +
+    line("Publications", r.publications) +
+    line("Courses", r.courses) +
+    line("Patents", r.patents) +
+    line("Services offered", r.services) +
+    line("Interests", r.interests) +
     line("Searched", r.search_company) +
+    line("Profile ID", r.public_id) +
     `<b>Scraped:</b> ${esc(r.scraped_at || "—")}`;
   $("#drawerOpen").href = r.url || "#";
   drawerEl.classList.add("open");
@@ -844,10 +879,13 @@ function renderAnalytics() {
 
 /* Export the currently filtered+sorted view as CSV (client-side, no server). */
 function buildCsv(rows) {
-  const headers = ["Name", "Title", "Searched", "Headline", "Location", "Email", "Open To Work", "Followers", "LinkedIn URL", "Scraped At"];
+  const headers = ["Name", "Title", "Searched", "Headline", "Location", "Email", "Seniority",
+                   "Years Experience", "Open To Work", "Hiring", "Followers", "LinkedIn URL", "Scraped At"];
   const q = s => '"' + String(s ?? "").replace(/"/g, '""') + '"';
   const body = rows.map(r => [r.name, r.title, r.search_company, r.headline, r.location, r.email,
-                             r.open_to_work ? "Yes" : "", r.follower_count || "", r.url, r.scraped_at]);
+                             r.seniority || "", r.total_experience_years || "",
+                             r.open_to_work ? "Yes" : "", r.is_hiring ? "Yes" : "",
+                             r.follower_count || "", r.url, r.scraped_at]);
   return [headers, ...body].map(row => row.map(q).join(",")).join("\r\n");
 }
 csvBtn.addEventListener("click", () => {

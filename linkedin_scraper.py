@@ -20,6 +20,74 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────
+#  COHERENT FINGERPRINT PROFILES
+#  A UA must agree with the rest of the browser or the mismatch itself
+#  becomes the detection signal: a Mac UA on a Windows Chromium build
+#  exposes navigator.platform, userAgentData.platform and GPU strings
+#  that contradict it. Each profile keeps UA / platform / viewport / GPU
+#  / timezone / locale telling the same story, and the geo defaults
+#  (timezone + geolocation + locale) stay consistent within a profile.
+# ─────────────────────────────────────────────────────────────
+_FINGERPRINTS = [
+    {   # Windows / Chrome — most common real-world profile
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "platform": "Win32",
+        "platform_label": "Windows",
+        "platform_ver": "15.0.0",
+        "ua_version": "131",
+        "viewport": (1920, 1080),
+        "timezone_id": "America/New_York",
+        "locale": "en-US",
+        "geo": {"longitude": -74.006, "latitude": 40.7128},
+        "webgl_vendor": "Google Inc. (NVIDIA)",
+        "webgl_renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "hardware": {"deviceMemory": 16, "hardwareConcurrency": 12, "maxTouchPoints": 0},
+    },
+    {   # Windows / Chrome — integrated GPU, 1366x768 laptop
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "platform": "Win32",
+        "platform_label": "Windows",
+        "platform_ver": "15.0.0",
+        "ua_version": "130",
+        "viewport": (1366, 768),
+        "timezone_id": "America/Chicago",
+        "locale": "en-US",
+        "geo": {"longitude": -87.6298, "latitude": 41.8781},
+        "webgl_vendor": "Google Inc. (Intel)",
+        "webgl_renderer": "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "hardware": {"deviceMemory": 8, "hardwareConcurrency": 8, "maxTouchPoints": 0},
+    },
+    {   # macOS / Chrome — M-series MacBook
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "platform": "MacIntel",
+        "platform_label": "macOS",
+        "platform_ver": "10.15.7",
+        "ua_version": "131",
+        "viewport": (1728, 1117),  # 14" MacBook Pro logical resolution
+        "timezone_id": "America/Los_Angeles",
+        "locale": "en-US",
+        "geo": {"longitude": -122.4194, "latitude": 37.7749},
+        "webgl_vendor": "Apple Inc.",
+        "webgl_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "hardware": {"deviceMemory": 8, "hardwareConcurrency": 10, "maxTouchPoints": 0},
+    },
+    {   # Linux / Chrome — desktop workstation
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "platform": "Linux x86_64",
+        "platform_label": "Linux",
+        "platform_ver": "6.5.0",
+        "ua_version": "130",
+        "viewport": (1600, 900),
+        "timezone_id": "America/Denver",
+        "locale": "en-US",
+        "geo": {"longitude": -104.9903, "latitude": 39.7392},
+        "webgl_vendor": "Google Inc. (AMD)",
+        "webgl_renderer": "ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "hardware": {"deviceMemory": 16, "hardwareConcurrency": 16, "maxTouchPoints": 0},
+    },
+]
+
 
 class LinkedInScraper:
     """
@@ -39,6 +107,9 @@ class LinkedInScraper:
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.playwright = None
+        # Auto-recovery counter: how many block/authwall events this run has
+        # already rotated its way out of (see _recover_from_block).
+        self._block_recoveries = 0
         # Single account from config; supports the login/session code path.
         self.current_account = {
             "email": config.LINKEDIN_EMAIL,
@@ -50,6 +121,9 @@ class LinkedInScraper:
         # Set to "credentials" when LinkedIn rejects the login form, so the
         # retry loop gives up instead of risking an account lock.
         self._last_login_error = ""
+        # Why the last _check_page_block_status() call called it blocked
+        # ("authwall" / "rate_limit" / "captcha" / "checkpoint").
+        self._block_reason = ""
         # Proxy rotation state (see _next_proxy).
         self.current_proxy = None
         self._proxy_cursor = random.randrange(max(1, len(config.PROXY_LIST)))
@@ -101,21 +175,53 @@ class LinkedInScraper:
                 logger.warning("🌐 No free proxy available — using direct connection")
 
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(
-            headless=self.config.HEADLESS,
-            proxy=proxy_dict,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-                "--disable-dev-shm-usage",
-                "--disable-extensions",
-                "--start-maximized",
-            ]
-        )
+        try:
+            self.browser = await self.playwright.chromium.launch(
+                headless=self.config.HEADLESS,
+                proxy=proxy_dict,
+                args=[
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--start-maximized",
+                ]
+            )
+        except Exception as e:
+            # A dead proxy usually surfaces right here — fall back to a direct
+            # connection once instead of dying with the launch.
+            if proxy_dict:
+                logger.warning(f"⚠️  Launch with proxy failed ({e.__class__.__name__}) — retrying direct.")
+                proxy_dict = None
+                self.current_proxy = None
+                self.browser = await self.playwright.chromium.launch(
+                    headless=self.config.HEADLESS,
+                    proxy=None,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--disable-dev-shm-usage",
+                        "--disable-extensions",
+                        "--start-maximized",
+                    ]
+                )
+            else:
+                raise
 
-        user_agent = random.choice(self.config.USER_AGENTS)
-        logger.info(f"🕵️  Spoofing UA: {user_agent[:40]}...")
+        # Coherent fingerprint selection — either a fixed profile per launch
+        # (consistent UA/platform/GPU/viewport/timezone) or randomized each
+        # launch when RANDOMIZE_FINGERPRINT is on. The viewport is read
+        # defensively so a hand-edited profile missing the key degrades to
+        # 1920x1080 instead of crashing the launch.
+        if self.config.RANDOMIZE_FINGERPRINT:
+            fp = random.choice(_FINGERPRINTS)
+        else:
+            fp = _FINGERPRINTS[0]
+        user_agent = fp["user_agent"]
+        viewport = fp.get("viewport", (1920, 1080))
+        logger.info(f"🕵️  Fingerprint: {fp['platform']} · {viewport[0]}x{viewport[1]} · {fp['timezone_id']}")
 
         # Reuse a persisted login session if one exists — the fastest and least
         # detectable path (no typing, no 2FA on subsequent runs).
@@ -125,32 +231,138 @@ class LinkedInScraper:
             if session_file.exists():
                 storage_state = str(session_file)
 
+        # A single context must present ONE coherent identity: UA, platform,
+        # viewport, locale, timezone, geo and client hints all come from the
+        # same profile so nothing contradicts anything else.
         self.context = await self.browser.new_context(
             user_agent=user_agent,
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-            timezone_id="America/New_York",
+            viewport={"width": viewport[0], "height": viewport[1]},
+            locale=fp["locale"],
+            timezone_id=fp["timezone_id"],
             permissions=["geolocation"],
-            geolocation={"longitude": -73.9857, "latitude": 40.7484},
+            geolocation=fp["geo"],
             extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
+                "Accept-Language": f"{fp['locale']},en;q=0.9",
+                "sec-ch-ua-platform": f'"{fp["platform_label"]}"',
             },
             storage_state=storage_state,
         )
 
-        # Stealth scripts
-        await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+        # Deep stealth script — every LinkedIn bot-check surface, patched in
+        # one pass. f-string with doubled braces; {fp[...]} holes inject the
+        # coherent fingerprint values (WebGL vendor/renderer, hardware).
+        await self.context.add_init_script(f"""
+            // --- navigator.webdriver must disappear -------------------------
+            Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+
+            // --- window.chrome must exist in a Chromium browser --------------
+            if (!window.chrome) {{
+                window.chrome = {{
+                    runtime: {{}},
+                    loadTimes: function() {{}},
+                    csi: function() {{}},
+                    app: {{ isInstalled: false }}
+                }};
+            }}
+
+            // --- permissions.query must not leak 'prompt' for notifications --
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
                 parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
+                    Promise.resolve({{ state: Notification.permission }}) :
                     originalQuery(parameters)
             );
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+            // --- plugins must look populated (PDF viewer, Chrome components) -
+            const PLUGIN_DATA = [
+                {{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
+                {{ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoikgieeekl', description: '' }},
+                {{ name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }}
+            ];
+            const fakePluginArray = Object.create(PluginArray.prototype);
+            PLUGIN_DATA.forEach((p, i) => {{
+                const plugin = Object.create(Plugin.prototype);
+                Object.defineProperties(plugin, {{
+                    name: {{ value: p.name, enumerable: true }},
+                    filename: {{ value: p.filename, enumerable: true }},
+                    description: {{ value: p.description, enumerable: true }},
+                    length: {{ value: 0, enumerable: true }}
+                }});
+                Object.defineProperty(fakePluginArray, i, {{ value: plugin, enumerable: true }});
+            }});
+            Object.defineProperty(fakePluginArray, 'length', {{ value: PLUGIN_DATA.length, enumerable: true }});
+            Object.defineProperty(navigator, 'plugins', {{ get: () => fakePluginArray }});
+            Object.defineProperty(navigator, 'mimeTypes', {{ get: () => {{
+                const mt = Object.create(MimeTypeArray.prototype);
+                Object.defineProperty(mt, 'length', {{ value: 2, enumerable: true }});
+                return mt;
+            }}}});
+
+            // --- languages must include the context locale -------------------
+            Object.defineProperty(navigator, 'languages', {{ get: () => ['{fp['locale']}', 'en'] }});
+
+            // --- WebGL must report the fingerprint GPU, not SwiftShader ------
+            try {{
+                const WEBGL_VENDOR = '{fp['webgl_vendor']}';
+                const WEBGL_RENDERER = '{fp['webgl_renderer']}';
+                const patchGetParameter = (proto) => {{
+                    const getParameter = proto.getParameter;
+                    proto.getParameter = function (param) {{
+                        if (param === 37445) return WEBGL_VENDOR;
+                        if (param === 37446) return WEBGL_RENDERER;
+                        return getParameter.call(this, param);
+                    }};
+                }};
+                patchGetParameter(WebGLRenderingContext.prototype);
+                patchGetParameter(WebGL2RenderingContext.prototype);
+            }} catch (err) {{ /* never break page scripts */ }}
+
+            // --- hardware hints must match the fingerprint profile -----------
+            try {{
+                Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {fp['hardware']['deviceMemory']} }});
+                Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {fp['hardware']['hardwareConcurrency']} }});
+                Object.defineProperty(navigator, 'maxTouchPoints', {{ get: () => {fp['hardware']['maxTouchPoints']} }});
+            }} catch (err) {{ /* non-fatal */ }}
+
+            // --- userAgentData must agree with the UA string -----------------
+            try {{
+                const BRAND_VERSION = '{fp['ua_version']}';
+                const UA_PLATFORM = '{fp['platform_label']}';
+                Object.defineProperty(navigator, 'userAgentData', {{
+                    value: {{
+                        brands: [
+                            {{ brand: 'Not_A Brand', version: '24' }},
+                            {{ brand: 'Chromium', version: BRAND_VERSION }},
+                            {{ brand: 'Google Chrome', version: BRAND_VERSION }},
+                        ],
+                        mobile: false,
+                        platforms: [UA_PLATFORM],
+                        getHighEntropyValues: async (hints) => ({{
+                            architecture: 'x86',
+                            bitness: '64',
+                            model: '',
+                            platform: UA_PLATFORM,
+                            platformVersion: '{fp['platform_ver']}',
+                            uaFullVersion: BRAND_VERSION + '.0.0.0',
+                            fullVersionList: [
+                                {{ brand: 'Not_A Brand', version: '24.0.0.0' }},
+                                {{ brand: 'Chromium', version: BRAND_VERSION + '.0.0.0' }},
+                                {{ brand: 'Google Chrome', version: BRAND_VERSION + '.0.0.0' }},
+                            ],
+                        }}),
+                        toJSON: function() {{
+                            return {{ brands: this.brands, mobile: this.mobile, platform: this.platform }};
+                        }},
+                    }}
+                }});
+            }} catch (err) {{ /* non-fatal */ }}
+
+            // --- Chrome has no notification permission by default ------------
+            try {{
+                if (typeof Notification !== 'undefined' && Notification.permission === 'default') {{
+                    // Leave as-is; permissions.query patch handles the probe.
+                }}
+            }} catch (err) {{ /* non-fatal */ }}
         """)
 
         self.page = await self.context.new_page()
@@ -161,16 +373,59 @@ class LinkedInScraper:
 
         logger.info("✅ Browser launched successfully.")
 
-    async def _rotate_identity(self):
-        """Re-launch browser with a new IP/proxy and User-Agent to shed fingerprint."""
-        logger.info("🔄 Rotating User-Agent & clearing state to shed fingerprint...")
+    async def _rotate_identity(self) -> bool:
+        """Re-launch with a fresh IP/proxy + fingerprint, then re-login.
+
+        Teardown is guarded so a half-dead browser/context/page (very likely
+        right after a block) can't turn a rotation into a crash, and the
+        Playwright driver is always stopped and restarted cleanly instead of
+        being reused in an unknown state.
+
+        Returns True only when the new identity is authenticated — callers can
+        use that to decide whether it's safe to resume scraping.
+        """
+        logger.info("🔄 Rotating identity (new IP + fingerprint)...")
         self._telemetry_event("rotate", f"proxy: {self.current_proxy or 'direct'}")
-        if self.browser:
-            await self.browser.close()
-        
-        await self._launch_browser()
-        # Have to log in again after rotating identity
-        await self.login()
+
+        # Tear down old context then browser, each independently guarded.
+        for closer in (
+            (self.context.close() if self.context is not None else None),
+            (self.browser.close() if self.browser is not None else None),
+        ):
+            if closer is None:
+                continue
+            try:
+                await closer
+            except Exception:
+                pass
+        self.context = None
+        self.browser = None
+        self.page = None
+
+        # Always restart the driver — reusing it after a block/dead proxy is the
+        # single most common source of "target closed" crashes.
+        try:
+            if self.playwright is not None:
+                await self.playwright.stop()
+        except Exception:
+            pass
+        self.playwright = None
+
+        try:
+            await self._launch_browser()
+        except Exception as e:
+            logger.error(f"❌ Re-launch after rotation failed ({e.__class__.__name__}: {e}).")
+            return False
+
+        try:
+            if not await self.login():
+                logger.error("❌ Re-login after rotation failed — session is not authenticated.")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Re-login after rotation errored ({e.__class__.__name__}: {e}).")
+            return False
+
+        return True
 
     def _next_proxy(self):
         """
@@ -228,13 +483,14 @@ class LinkedInScraper:
             logger.info(f"⏳ Adaptive break: {wait:.0f}s (consecutive errors: {self.consecutive_errors})")
             await human_delay(wait * 0.9, wait * 1.1)
             
+            rotated = True
             if self.config.ROTATE_USER_AGENT:
                 # Shed the current proxy before rotating — dead proxies are
                 # removed from the free-proxy pool so the list refills.
                 if self.proxy_manager is not None and self.current_proxy:
                     self.proxy_manager.mark_failed(self.current_proxy)
                     self.current_proxy = None
-                await self._rotate_identity()
+                rotated = await self._rotate_identity()
             
             self.telemetry["max_consecutive_errors"] = max(
                 self.telemetry["max_consecutive_errors"], self.consecutive_errors
@@ -242,26 +498,125 @@ class LinkedInScraper:
             self.telemetry["throttle_events"] += 1
             self._telemetry_event("throttle", f"{self.consecutive_errors} consecutive errors")
             self.consecutive_errors = 0
+            if not rotated:
+                # The browser/login is in an unusable state — continuing would
+                # just spray errors at a dead session. Let the caller stop.
+                logger.error("❌ Rotation failed while throttled — stopping this search.")
+                self._telemetry_event("block", "rotation failed while throttled")
+                return False
             return True
             
         return False
 
     async def _check_page_block_status(self) -> bool:
-        """Check if the current page is an auth-wall, captcha, or rate-limit page."""
-        current_url = self.page.url
-        if "checkpoint" in current_url or "challenge" in current_url:
-            logger.error("🛑 CAPTCHA / Security Checkpoint detected!")
-            logger.warning("   Please complete the challenge manually in the browser window.")
-            resolved = await self._await_challenge_resolution(self.config.LOGIN_CHALLENGE_TIMEOUT_SECONDS)
-            return not resolved  # still blocked only if the challenge wasn't resolved
-            
-        # Check for authwall
-        content = await self.page.content()
-        if "authwall" in current_url or "Sign in to LinkedIn" in content:
-            logger.error("🛑 LinkedIn triggered an auth-wall (forced login screen). Session compromised.")
+        """Classify the current page as blocked / limited (sets self._block_reason).
+
+        Returns True when the page is an auth-wall, captcha, security
+        checkpoint or a rate-limit / "unusual activity" interstitial — i.e. the
+        session should stop and recover instead of hammering LinkedIn.
+        """
+        self._block_reason = ""
+        try:
+            current_url = (self.page.url or "").lower()
+        except Exception:
+            return False
+
+        # 1) Hard security checkpoint / captcha — sometimes human-solvable.
+        if any(m in current_url for m in ("/checkpoint/", "challenge", "/security/")):
+            logger.error("🛑 CAPTCHA / security checkpoint detected!")
+            logger.warning("   Complete the challenge in the browser window if you can.")
+            resolved = await self._await_challenge_resolution(
+                self.config.LOGIN_CHALLENGE_TIMEOUT_SECONDS
+            )
+            if resolved:
+                return False
+            self._block_reason = "checkpoint"
             return True
-            
+
+        content = ""
+        try:
+            content = (await self.page.content()).lower()
+        except Exception:
+            pass
+
+        # 2) Rate limiting / throttling — LinkedIn's classic "slow down" wall.
+        if any(m in content for m in (
+            "too many requests",
+            "error 429",
+            "http 429",
+            "you've reached the limit",
+            "unusual activity",
+            "we've restricted",
+            "temporarily restricted",
+        )):
+            logger.error("🛑 Rate-limit / unusual-activity page detected.")
+            self._block_reason = "rate_limit"
+            return True
+
+        # 3) Forced auth wall — a logged-in session never sees this on a search.
+        if any(m in current_url for m in ("authwall", "/uas/login", "/signup")) or any(
+            m in content for m in ("sign in to linkedin", "join linkedin to see", "authwall")
+        ):
+            logger.error("🛑 Auth-wall detected — session is no longer authenticated.")
+            self._block_reason = "authwall"
+            return True
+
+        # 4) Explicit human-verification interstitials.
+        if any(m in content for m in (
+            "prove you're not a robot",
+            "are you a human",
+            "let's do a quick security check",
+        )):
+            logger.error("🛑 Human-verification interstitial detected.")
+            self._block_reason = "captcha"
+            return True
+
         return False
+
+    async def _recover_from_block(self, context: str) -> bool:
+        """Rotate identity + re-login to recover from a block, then resume.
+
+        Bounded by config.MAX_BLOCK_RECOVERIES so a determined auth-wall can't
+        spin forever or burn the account. Returns True when a fresh,
+        authenticated identity is ready to continue the current search;
+        False when the recovery budget is spent or the re-login failed (the
+        caller should stop cleanly rather than retry).
+        """
+        reason = self._block_reason or "unknown"
+        if self._block_recoveries >= self.config.MAX_BLOCK_RECOVERIES:
+            logger.error(
+                f"🛑 Blocked again during {context} ({reason}) but the recovery "
+                f"budget ({self.config.MAX_BLOCK_RECOVERIES}) is exhausted — stopping."
+            )
+            self._telemetry_event("block", f"{reason}: budget exhausted")
+            return False
+
+        self._block_recoveries += 1
+        attempt = self._block_recoveries
+        budget = self.config.MAX_BLOCK_RECOVERIES
+        logger.warning(f"♻️  Block recovery {attempt}/{budget} after '{reason}' during {context}...")
+        self._telemetry_event("recover", f"{reason} (#{attempt}/{budget})")
+
+        # Grow the pause with each successive recovery — an instant retry after
+        # a rate-limit just re-triggers it.
+        wait = self._backoff_delay(3 + attempt)
+        logger.info(f"⏳ Cooling down {wait:.0f}s before rotating identity...")
+        await human_delay(wait * 0.9, wait * 1.1)
+
+        try:
+            rotated = await self._rotate_identity()
+        except Exception as e:
+            logger.error(f"❌ Identity rotation failed ({e.__class__.__name__}: {e}) — stopping.")
+            return False
+
+        if not rotated:
+            logger.error("❌ Could not re-authenticate after rotation — stopping.")
+            return False
+
+        self.consecutive_errors = 0
+        self._block_reason = ""
+        logger.info(f"✅ Recovered from '{reason}' — resuming {context}.")
+        return True
 
     # ─────────────────────────────────────────────
     #  AUTHENTICATION
@@ -498,6 +853,10 @@ class LinkedInScraper:
                 await human_delay(3, 6)
                 
                 if await self._check_page_block_status():
+                    # Rotate + re-login and retry this page; stop only when the
+                    # recovery budget is exhausted or re-login failed.
+                    if await self._recover_from_block(f"jobs search '{keyword}' page {page_num}"):
+                        continue
                     break
                     
                 self.consecutive_errors = 0  # Reset errors on success
@@ -651,6 +1010,10 @@ class LinkedInScraper:
                 await human_delay(3, 6)
                 
                 if await self._check_page_block_status():
+                    # Rotate + re-login and retry this page; stop only when the
+                    # recovery budget is exhausted or re-login failed.
+                    if await self._recover_from_block(f"search results page {page_num}"):
+                        continue
                     break
                     
                 self.consecutive_errors = 0
@@ -725,6 +1088,10 @@ class LinkedInScraper:
                 await human_delay(3, 6)
                 
                 if await self._check_page_block_status():
+                    # Rotate + re-login and retry this page; stop only when the
+                    # recovery budget is exhausted or re-login failed.
+                    if await self._recover_from_block(f"search results page {page_num}"):
+                        continue
                     break
                     
                 self.consecutive_errors = 0

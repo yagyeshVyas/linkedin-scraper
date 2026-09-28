@@ -472,6 +472,273 @@ def test_config_defaults():
     assert cfg.RETRY_FAILED_PROFILES is True
 
 
+def test_fingerprint_profiles_are_coherent():
+    """Every profile must tell ONE story: a UA whose browser version matches
+    ua_version, a platform string that matches the UA's OS, and a viewport
+    (the key that went missing and exploded _launch_browser)."""
+    required = {
+        "user_agent", "platform", "platform_label", "platform_ver", "ua_version",
+        "viewport", "timezone_id", "locale", "geo", "webgl_vendor",
+        "webgl_renderer", "hardware",
+    }
+    assert len(L._FINGERPRINTS) >= 2, "need more than one identity to rotate through"
+    for fp in L._FINGERPRINTS:
+        missing = required - set(fp)
+        assert not missing, f"profile missing {missing}"
+
+        # viewport must be a usable (width, height) pair
+        w, h = fp["viewport"]
+        assert isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0
+
+        # UA version must agree with the claimed ua_version
+        assert f"Chrome/{fp['ua_version']}." in fp["user_agent"], fp["user_agent"]
+        assert fp["user_agent"].endswith("Safari/537.36")
+
+        # platform string must agree with the OS named in the UA
+        ua = fp["user_agent"]
+        if "Windows NT" in ua:
+            assert fp["platform"] == "Win32"
+        elif "Macintosh" in ua:
+            assert fp["platform"] == "MacIntel"
+        elif "X11" in ua:
+            assert fp["platform"] == "Linux x86_64"
+        else:
+            raise AssertionError(f"unclassifiable platform in {ua}")
+
+        # hardware block must be numeric and internally consistent
+        hw = fp["hardware"]
+        assert set(hw) == {"deviceMemory", "hardwareConcurrency", "maxTouchPoints"}
+        assert all(isinstance(v, int) for v in hw.values())
+
+        # geo/timezone/locale must be present (no contradictory identity)
+        assert set(fp["geo"]) == {"longitude", "latitude"}
+        assert fp["locale"].startswith("en")
+
+
+def test_stealth_script_renders_with_real_fingerprint():
+    """Render the add_init_script f-string the way Python does at runtime and
+    assert it produces valid JS with the fingerprint values substituted.
+
+    Regression guard for the doubled-brace trap: a single stray `{`/`}` in the
+    f-string either fails to compile or silently emits broken JS.
+    """
+    import inspect
+    import re
+
+    src = inspect.getsource(L.LinkedInScraper._launch_browser)
+    m = re.search(r'add_init_script\(f("""|\'\'\')(.*?)\1\)', src, re.S)
+    assert m, "stealth init script call not found in _launch_browser"
+
+    literal = m.group(0).split("add_init_script(", 1)[1].rstrip(")")
+    fp = L._FINGERPRINTS[0]
+    rendered = eval(literal, {"fp": fp})
+
+    # Real values were injected, not left as placeholders.
+    assert fp["webgl_renderer"] in rendered
+    assert fp["ua_version"] in rendered
+    assert fp["locale"] in rendered
+
+    # The core anti-detection patches survived.
+    assert "navigator.webdriver" in rendered
+    assert "userAgentData" in rendered
+    assert "deviceMemory" in rendered
+    assert "WebGL2RenderingContext.prototype" in rendered
+
+    # Escaped f-string braces must have collapsed cleanly: no leftover
+    # expression syntax (`{fp[`, `{{`) and no unbalanced JS braces.
+    assert "{fp[" not in rendered, "an f-string expression leaked into the JS"
+    assert "{{" not in rendered, "an escaped double brace was not collapsed"
+    assert rendered.count("{") == rendered.count("}"), "unbalanced JS braces"
+
+
+def test_block_detection_classifies_pages():
+    """_check_page_block_status must recognise each block family and record
+    why, so recovery/telemetry can act on the right reason."""
+    class FakePageStub:
+        def __init__(self, url, content=""):
+            self.url = url
+            self._content = content
+
+        async def content(self):
+            return self._content
+
+    L.human_delay = _noop
+    s = L.LinkedInScraper(Config())
+
+    # 1) Clean authenticated search page → not blocked, no reason.
+    s.page = FakePageStub("https://www.linkedin.com/search/results/people/?x=1",
+                          "<html>Recruiters</html>")
+    assert asyncio.run(s._check_page_block_status()) is False
+    assert s._block_reason == ""
+
+    # 2) Forced auth wall.
+    s.page = FakePageStub("https://www.linkedin.com/authwall?trk=1", "")
+    assert asyncio.run(s._check_page_block_status()) is True
+    assert s._block_reason == "authwall"
+
+    # 3) Rate limit / unusual activity (soft block).
+    s.page = FakePageStub("https://www.linkedin.com/jobs/search/?x=1",
+                          "<html><body>Too many requests. Please try again later.</body></html>")
+    assert asyncio.run(s._check_page_block_status()) is True
+    assert s._block_reason == "rate_limit"
+
+    s.page = FakePageStub("https://www.linkedin.com/feed/",
+                          "<html>We've restricted your account for unusual activity</html>")
+    assert asyncio.run(s._check_page_block_status()) is True
+    assert s._block_reason == "rate_limit"
+
+    # 4) Human-verification interstitial.
+    s.page = FakePageStub("https://www.linkedin.com/search/results/people/",
+                          "<html>Please prove you're not a robot</html>")
+    assert asyncio.run(s._check_page_block_status()) is True
+    assert s._block_reason == "captcha"
+
+    # 5) Security checkpoint the human resolves → NOT a block.
+    s.page = FakePageStub("https://www.linkedin.com/checkpoint/challenge/abc", "")
+    checked = []
+
+    async def resolved_await(timeout):
+        checked.append(timeout)
+        return True
+
+    s._await_challenge_resolution = resolved_await
+    assert asyncio.run(s._check_page_block_status()) is False
+    assert checked == [s.config.LOGIN_CHALLENGE_TIMEOUT_SECONDS]
+
+    # ...and when it does NOT resolve, it IS a block with reason "checkpoint".
+    async def unresolved_await(timeout):
+        return False
+
+    s.page = FakePageStub("https://www.linkedin.com/checkpoint/challenge/abc", "")
+    s._await_challenge_resolution = unresolved_await
+    assert asyncio.run(s._check_page_block_status()) is True
+    assert s._block_reason == "checkpoint"
+
+
+def test_recover_from_block_is_bounded():
+    """Recovery rotates + re-logins, then stops once MAX_BLOCK_RECOVERIES is
+    spent. A failed rotation must stop immediately, not spin."""
+    L.human_delay = _noop  # no real cooldown sleep in tests
+    cfg = Config()
+    cfg.MAX_BLOCK_RECOVERIES = 2
+    s = L.LinkedInScraper(cfg)
+
+    rotations = []
+
+    async def ok_rotate():
+        rotations.append(1)
+        return True
+
+    s._rotate_identity = ok_rotate
+    s._block_reason = "rate_limit"
+
+    assert asyncio.run(s._recover_from_block("jobs page 1")) is True
+    assert s._block_recoveries == 1
+    assert asyncio.run(s._recover_from_block("jobs page 1")) is True
+    assert s._block_recoveries == 2
+
+    # Budget exhausted → stop, and never rotate a third time.
+    assert asyncio.run(s._recover_from_block("jobs page 1")) is False
+    assert s._block_recoveries == 2
+    assert len(rotations) == 2, "exhausted budget must not rotate again"
+
+    # A failed rotation stops recovery even with budget left.
+    s2 = L.LinkedInScraper(cfg)
+
+    async def bad_rotate():
+        return False
+
+    s2._rotate_identity = bad_rotate
+    assert asyncio.run(s2._recover_from_block("people page 3")) is False
+    assert s2.results == []
+
+    # Rotation that *raises* is caught, not propagated.
+    s3 = L.LinkedInScraper(cfg)
+
+    async def boom_rotate():
+        raise RuntimeError("target closed")
+
+    s3._rotate_identity = boom_rotate
+    assert asyncio.run(s3._recover_from_block("candidates page 2")) is False
+
+
+def test_rotate_identity_teardown_and_failure_paths():
+    """_rotate_identity must survive a half-dead browser and report failure
+    instead of raising, so callers can stop cleanly."""
+    L.human_delay = _noop
+    s = L.LinkedInScraper(Config())
+
+    # Nothing launched yet → _launch_browser fails → returns False, no crash.
+    async def broken_launch():
+        raise RuntimeError("no browser")
+
+    s._launch_browser = broken_launch
+    assert asyncio.run(s._rotate_identity()) is False
+
+    # Launch fine but re-login refuses → False.
+    async def ok_launch():
+        pass
+
+    async def login_false():
+        return False
+
+    s._launch_browser = ok_launch
+    s.login = login_false
+    assert asyncio.run(s._rotate_identity()) is False
+
+    # Launch + login ok → True.
+    async def login_true():
+        return True
+
+    s.login = login_true
+    assert asyncio.run(s._rotate_identity()) is True
+
+    # Half-dead context/browser: close() raising must not stop the rotation.
+    class DeadCloser:
+        async def close(self):
+            raise RuntimeError("already closed")
+
+    s.context, s.browser, s.page = DeadCloser(), DeadCloser(), None
+    assert asyncio.run(s._rotate_identity()) is True
+    assert s.context is None and s.browser is None
+
+
+def test_progress_is_atomic_and_corruption_tolerant():
+    import tempfile
+
+    from utils import load_progress, save_progress
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = str(Path(tmp) / "progress.json")
+
+        # Missing file → full default shape (including the key run() reads).
+        fresh = load_progress(p)
+        assert fresh["results"] == [] and fresh["completed_keys"] == []
+
+        # Round-trip.
+        save_progress(p, {"results": [{"a": 1}], "completed_keys": ["people::x"]})
+        got = load_progress(p)
+        assert got["results"] == [{"a": 1}] and got["completed_keys"] == ["people::x"]
+
+        # Corrupt JSON → fresh start, never an exception.
+        Path(p).write_text("{not json", encoding="utf-8")
+        assert load_progress(p)["completed_keys"] == []
+
+        # Valid JSON of the wrong type → fresh start.
+        Path(p).write_text("[1, 2, 3]", encoding="utf-8")
+        assert load_progress(p)["results"] == []
+
+        # Legacy file tracked progress under "completed_companies".
+        Path(p).write_text('{"results": [], "completed_companies": ["jobs::python"]}', encoding="utf-8")
+        legacy = load_progress(p)
+        assert legacy["completed_keys"] == ["jobs::python"]
+
+        # Saving somewhere impossible warns but does not raise.
+        blocker = Path(tmp) / "a_file"
+        blocker.write_text("x", encoding="utf-8")
+        save_progress(str(blocker / "nested" / "progress.json"), {"results": []})
+
+
 if __name__ == "__main__":
     for fn in [test_extractors, test_email_filtering, test_hours_ago,
                test_url_encoding, test_init_and_dedup_seeding,
@@ -484,7 +751,13 @@ if __name__ == "__main__":
                test_cli_parser, test_session_health_store_rolling_cap,
                test_session_health_live_then_finalize, test_ban_risk_logic,
                test_generator_loads_session_health, test_login_helpers,
-               test_config_defaults]:
+               test_config_defaults,
+               test_fingerprint_profiles_are_coherent,
+               test_stealth_script_renders_with_real_fingerprint,
+               test_block_detection_classifies_pages,
+               test_recover_from_block_is_bounded,
+               test_rotate_identity_teardown_and_failure_paths,
+               test_progress_is_atomic_and_corruption_tolerant]:
         fn()
         print(f"PASS {fn.__name__}")
     print("\nAll scraper fix tests passed.")

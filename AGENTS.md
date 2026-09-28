@@ -37,9 +37,26 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   to `output/proxies.json`. Note: `ProxyManager.refresh()` was fixed so a fresh instance honors a
   fresh cache (`last_refresh` was 0 → it used to refetch from the network every launch). Dead
   proxies are shed via `mark_failed` on consecutive errors.
-- Behavioral tests: `test_scraper_fixes.py` and `test_login_flow.py` — run both with
-  `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite drives the
-  real `login()` against fakes).
+- Anti-detection (2026-09): `_FINGERPRINTS` (top of `linkedin_scraper.py`) holds 4 *coherent*
+  identity profiles. `_launch_browser` picks one (`RANDOMIZE_FINGERPRINT`, else `[0]`) and feeds
+  UA, ``navigator.platform``, viewport, locale, timezone, geolocation **and** the stealth script
+  from that same profile, so nothing contradicts anything else. `config.USER_AGENTS` is now
+  Chromium-desktop-only on purpose (Firefox/Safari UAs in a Chromium build are a signal).
+- Block handling (2026-09): `_check_page_block_status()` classifies auth-wall / captcha /
+  checkpoint / rate-limit pages and records the reason in `self._block_reason`;
+  `_recover_from_block(context)` cools down, calls `_rotate_identity()` (new proxy + fingerprint
+  + re-login) and returns True so the calling search loop `continue`s. Bounded by
+  `config.MAX_BLOCK_RECOVERIES`. `_rotate_identity()` now returns bool (False on relaunch/login
+  failure) and is teardown-safe: context/browser closes are individually guarded, the Playwright
+  driver is always stopped + restarted, and `_handle_potential_block` returns False if rotation
+  fails so the search stops instead of spraying errors at a dead session.
+- `utils.save_progress` writes atomically (temp + `os.replace`) and never raises;
+  `utils.load_progress` tolerates missing/corrupt/non-dict files and normalises the legacy
+  `completed_companies` key into `completed_keys` (the key `run()` actually reads).
+- Behavioral tests: `test_scraper_fixes.py` (25 tests) and `test_login_flow.py` (5 tests) — run
+  both with `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite
+  drives the real `login()` against fakes). No pytest in the venv — each file is a plain script
+  with a `__main__` runner list; add new tests to that list.
 
 ## Security
 
@@ -52,6 +69,11 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 - `python -m py_compile` writes `.pyc` files into `__pycache__`, which is TRACKED in git here
   (`.gitignore` only excludes `.aider*`). For syntax checks prefer in-process `ast.parse`, or
   run with `PYTHONDONTWRITEBYTECODE=1`.
+- The stealth init script in `_launch_browser` is one big f-string, so **every** literal JS brace
+  must be doubled (`{{`/`}}`). A single stray `{` makes the module fail to import
+  (`f-string: single '}' is not allowed`) or silently emits broken JS. `test_stealth_script_
+  renders_with_real_fingerprint` renders the f-string with a sample profile and asserts there are
+  no unconverted braces — extend that test if you edit the script.
 - The Windows console (cp1252) can't print emoji from Python — a bare `print("✅ ...")`
   raises UnicodeEncodeError. Keep script prints ASCII or set `PYTHONIOENCODING=utf-8`.
 

@@ -247,7 +247,15 @@ USE_FREE_PROXIES = False   # True → auto-fetch + test free proxies when PROXY_
 ```python
 RETRY_FAILED_PROFILES = True      # one final pass over transiently-failed profiles before export
 LOGIN_CHALLENGE_TIMEOUT_SECONDS = 90  # how long to poll 2FA/checkpoint pages (no blind waits)
+MAX_BLOCK_RECOVERIES = 3          # auto-recover from blocks this many times per run, then stop
+RANDOMIZE_FINGERPRINT = True      # pick a fresh coherent identity (UA/viewport/GPU/tz/geo) each launch
 ```
+
+**Auto-recovery:** if LinkedIn serves an auth-wall, captcha, security checkpoint or a
+rate-limit / "unusual activity" page mid-run, the scraper cools down, rotates to a new
+identity (fresh proxy + fingerprint), logs back in, and resumes the page it was on. It does
+this at most `MAX_BLOCK_RECOVERIES` times per run, so a hard block can't loop forever or
+burn your account.
 
 **Notifications:**
 
@@ -402,11 +410,14 @@ every event) — nothing to configure.
 | **Proxy rotation** | Round-robins IPs — never the same proxy twice in a row |
 | **Exponential backoff** | Adaptive breaks grow with the error streak (~60s → capped 600s, jittered) |
 | **Smart login** | Restores saved sessions; retries with backoff; polls 2FA/checkpoints |
-| **Stealth JS** | Hides signs that a browser is being automated |
-| **User agent rotation** | Rotates between real Chrome and Safari agents |
+| **Coherent fingerprints** | One story per session: UA, `navigator.platform`, viewport, GPU, timezone, locale and geolocation all agree — a UA that contradicts the machine is itself a signal |
+| **Deep stealth JS** | Hides `navigator.webdriver`, fakes `window.chrome`, plugins/mimeTypes, WebGL GPU strings, hardware hints and `userAgentData`(client hints) |
+| **User agent rotation** | Rotates across real **Chromium** desktop agents (matching the engine that's actually driving) |
+| **Block auto-recovery** | Detects auth-walls / captchas / checkpoints / rate-limits, then rotates identity + re-logins and resumes (bounded) |
+| **Dead-proxy shedding** | Failed proxied launches fall back to direct; dead free proxies are dropped from the pool |
 | **Human-like typing** | Types credentials one character at a time |
 | **Random scrolling** | Scrolls pages up and down like a real person |
-| **NYC Geolocation** | Sets browser location to New York |
+| **Geo/timezone matching** | Geolocation is set to the same city as the profile's timezone and locale |
 
 > ⚠️ **Do NOT reduce the delay settings.** Faster = higher chance of getting blocked.
 

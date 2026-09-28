@@ -78,23 +78,60 @@ async def random_scroll(page, scrolls: int = 4):
 #  PROGRESS SAVE/LOAD (Resume after crash)
 # ─────────────────────────────────────────────
 
+def _empty_progress() -> dict:
+    """The shape a fresh (or unrecoverable) progress file should have."""
+    return {"results": [], "completed_keys": [], "completed_companies": []}
+
+
 def save_progress(filepath: str, data: dict):
-    """Save scraping progress to JSON for resume capability."""
-    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """Save scraping progress to JSON for resume capability (atomic write).
+
+    Written via a temp file + os.replace so a crash mid-save leaves either the
+    complete old file or the complete new one — never a truncated JSON blob
+    that would break the next resume.
+    """
+    try:
+        _write_json_atomic(Path(filepath), data)
+    except Exception as e:
+        # Losing progress must never kill an otherwise healthy run.
+        logger.warning(f"⚠️  Could not save progress ({e.__class__.__name__}: {e}).")
+        return
     logger.debug(f"Progress saved: {len(data.get('results', []))} records")
 
 
 def load_progress(filepath: str) -> dict:
-    """Load previous scraping progress if it exists."""
-    if Path(filepath).exists():
-        with open(filepath, "r", encoding="utf-8") as f:
+    """Load previous progress, tolerating a missing, corrupt or malformed file.
+
+    A crash mid-write (or a hand-edited progress.json) must never stop the
+    scraper from starting — it degrades to a fresh run with a warning.
+    """
+    path = Path(filepath)
+    if not path.exists():
+        return _empty_progress()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        logger.info(f"📂 Resumed progress: {len(data.get('results', []))} existing records, "
-                    f"{len(data.get('completed_companies', []))} companies done")
-        return data
-    return {"results": [], "completed_companies": []}
+    except (OSError, ValueError) as e:
+        logger.warning(
+            f"⚠️  Could not read progress file ({e.__class__.__name__}: {e}) — starting fresh."
+        )
+        return _empty_progress()
+    if not isinstance(data, dict):
+        logger.warning("⚠️  Progress file was not a JSON object — starting fresh.")
+        return _empty_progress()
+
+    if not isinstance(data.get("results"), list):
+        data["results"] = []
+    if not isinstance(data.get("completed_keys"), list):
+        # Back-compat: older files tracked progress under "completed_companies".
+        prior = data.get("completed_companies")
+        data["completed_keys"] = list(prior) if isinstance(prior, list) else []
+    if not isinstance(data.get("completed_companies"), list):
+        data["completed_companies"] = []
+
+    logger.info(f"📂 Resumed progress: {len(data['results'])} existing records, "
+                f"{len(data['completed_keys'])} items done")
+    return data
 
 
 def _load_session_health_file(path: Path) -> dict:

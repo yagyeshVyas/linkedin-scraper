@@ -53,8 +53,12 @@ def print_menu():
     • Best for: Finding perfectly matched fresh jobs
 [5] [bold red]❌ Exit[/]
 """
-    panel = Panel(menu_text, title="[bold white]LinkedIn Scraper v4.0 — Multi-Mode (Enhanced)[/]", border_style="blue", expand=False)
+    panel = Panel(menu_text, title="[bold white]LinkedIn Scraper v5.0 — Power Stack[/]", border_style="blue", expand=False)
     console.print(panel)
+    console.print(
+        "[dim]Scriptable mode:[/] [bold]python cli.py run --help[/] "
+        "[dim]| exports, stats, report, MCP, doctor[/]"
+    )
 
 async def main():
     config = Config()
@@ -161,7 +165,20 @@ async def main():
 
     console.print("[bold blue]🚀 Initializing Scraper Engine...[/]")
     scraper = LinkedInScraper(config)
-    await scraper.run(target_list)
+    summary = await scraper.run(target_list)
+
+    if summary:
+        exports = summary.get("exports") or {}
+        table = Table(title="Run Summary", show_header=False, box=None)
+        table.add_column("Key", style="cyan", justify="right")
+        table.add_column("Value", style="white")
+        table.add_row("Records", str(summary.get("records", 0)))
+        table.add_row("New / updated", f"{summary.get('new_in_db', 0)} / {summary.get('updated_in_db', 0)}")
+        table.add_row("Searches", str(summary.get("searches", 0)))
+        table.add_row("Run ID", str(summary.get("run_id") or "-"))
+        for fmt, path in exports.items():
+            table.add_row(fmt.upper(), str(path))
+        console.print(Panel(table, border_style="green", expand=False))
 
 if __name__ == "__main__":
     try:

@@ -6,15 +6,21 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
-from urllib.parse import urlencode
 
 from playwright.async_api import async_playwright, Page, BrowserContext
 from bs4 import BeautifulSoup
 
+from behavior import human_mouse_move, idle_jitter, warm_up
 from config import Config
+from enrichment import enrich_record
+from scoring import keyword_weights, read_resume_text, score_record
+from search_filters import (JobFilters, PeopleFilters, build_jobs_search_url,
+                            build_keywords, build_people_search_url,
+                            canonical_profile_url, resolve_geo)
+from storage import EventLog, open_store
 from utils import (
     human_delay, random_scroll, save_progress,
-    load_progress, setup_logging, export_to_excel,
+    load_progress, setup_logging,
     save_session_health, save_session_health_live
 )
 
@@ -143,6 +149,17 @@ class LinkedInScraper:
         # How many profiles came back empty for each tracked field — surfaced in
         # the final summary as an early warning for LinkedIn selector changes.
         self.section_misses = {}
+        # ── Power stack (v5.0) state. Everything is optional: with the new
+        # config defaults the scraper behaves exactly as it did before. ──
+        self.store = None            # SQLite Store (None when disabled/unavailable)
+        self.run_id = ""
+        self.event_log = None        # JSONL EventLog for this run
+        self.resume_weights = {}     # keyword -> weight, from RESUME_FILE_PATH
+        self.profiles_this_run = 0
+        self.new_records = 0
+        self.updated_records = 0
+        self._warned = set()         # de-duplicate filter warnings across pages
+        self._stop_reason = ""
         # Proxy rotation state (see _next_proxy).
         self.current_proxy = None
         self._proxy_cursor = random.randrange(max(1, len(config.PROXY_LIST)))
@@ -825,38 +842,13 @@ class LinkedInScraper:
         """
         jobs = []
         page_num = 1
-        
-        # Build search query
-        query_params = {
-            "keywords": keyword,
-            "origin": "GLOBAL_SEARCH_HEADER",
-            "refresh": "true"
-        }
-        
-        # Add location
-        if self.config.GEO_URN:
-            query_params["f_GC"] = self.config.GEO_URN
-            
-        # Add filters
-        if self.config.JOB_EXPERIENCE_LEVEL:
-            query_params["f_E"] = self.config.JOB_EXPERIENCE_LEVEL
-            
-        # Smart override for strict time filter
-        if getattr(self.config, 'JOB_STRICT_HOURS_FILTER', None) is not None:
-            if self.config.JOB_STRICT_HOURS_FILTER <= 24:
-                query_params["f_TPR"] = "r86400"
-            elif self.config.JOB_STRICT_HOURS_FILTER <= 168:
-                query_params["f_TPR"] = "r604800"
-            else:
-                query_params["f_TPR"] = "r2592000"
-        elif self.config.JOB_DATE_POSTED:
-            query_params["f_TPR"] = self.config.JOB_DATE_POSTED
-            
-        if self.config.JOB_REMOTE_FILTER:
-            query_params["f_WT"] = self.config.JOB_REMOTE_FILTER
-            
-        search_url = f"https://www.linkedin.com/jobs/search/?{urlencode(query_params)}"
-        
+
+        # Faceted job URL (v5.0): recency / experience / workplace / easy-apply
+        # / sort are rendered by the shared builder, which validates every value
+        # (LinkedIn silently ignores a filter it does not recognise).
+        base_filters = self._build_job_filters(keyword)
+        self._log_search_warnings(base_filters.warnings, f"job search '{keyword}'")
+
         logger.info(f"   💼 Searching Jobs: '{keyword}'")
 
         while page_num <= self.config.MAX_JOB_PAGES:
@@ -865,9 +857,10 @@ class LinkedInScraper:
                 break
 
             try:
-                # Add pagination offset (25 jobs per page)
-                url = search_url if page_num == 1 else f"{search_url}&start={(page_num-1)*25}"
-                
+                # LinkedIn pages jobs by ``start`` offset (25 cards per page).
+                page_filters = self._build_job_filters(
+                    keyword, start=base_filters.page_start(page_num, per_page=25))
+                url = build_jobs_search_url(page_filters)
                 await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.REQUEST_TIMEOUT_MS)
                 await human_delay(3, 6)
                 
@@ -892,21 +885,24 @@ class LinkedInScraper:
                 if not new_jobs:
                     logger.info(f"      No extractable jobs on page {page_num}.")
                     break
-                    
-                # Apply Strict Hours Filter
+
+                # Apply Strict Hours Filter (dropped is initialised outside the
+                # branch: it used to be referenced before assignment whenever the
+                # strict filter was off, raising UnboundLocalError).
+                dropped = 0
                 if getattr(self.config, 'JOB_STRICT_HOURS_FILTER', None) is not None:
                     filtered_jobs = []
                     for job in new_jobs:
                         hours_old = self._parse_hours_ago(job.get('full_text', ''))
                         if hours_old <= self.config.JOB_STRICT_HOURS_FILTER:
                             filtered_jobs.append(job)
-                            
+
                     dropped = len(new_jobs) - len(filtered_jobs)
                     if dropped > 0:
                         logger.info(f"      Dropped {dropped} jobs older than {self.config.JOB_STRICT_HOURS_FILTER} hours.")
-                    
+
                     new_jobs = filtered_jobs
-                    
+
                 if not new_jobs:
                     logger.info(f"      No jobs matched time filter on page {page_num}.")
                     # If all jobs on page are too old, we probably hit the chronological end.
@@ -1000,20 +996,12 @@ class LinkedInScraper:
         profile_urls = []
         page_num = 1
 
-        # Use title filter if provided, otherwise just skill
-        if self.config.CANDIDATE_TITLE_FILTER:
-            search_query = f'{skill} AND "{self.config.CANDIDATE_TITLE_FILTER}"'
-        else:
-            search_query = f'{skill}'
-
-        search_url = (
-            "https://www.linkedin.com/search/results/people/"
-            "?" + urlencode({
-                "keywords": search_query,
-                "origin": "GLOBAL_SEARCH_HEADER",
-                "geoUrn": f'["{self.config.GEO_URN}"]',
-            })
-        )
+        # Skill + optional title filter, rendered through the same faceted
+        # builder as people search (so network/seniority/location filters apply
+        # here too instead of silently diverging).
+        base_filters = self._build_people_filters(skill, self.config.CANDIDATE_TITLE_FILTER or "")
+        self._log_search_warnings(base_filters.warnings, f"candidate search '{skill}'")
+        search_query = base_filters.keywords
 
         logger.info(f"   👤 Searching Candidates: '{search_query}'")
 
@@ -1021,10 +1009,13 @@ class LinkedInScraper:
             if self.daily_searches >= self.config.MAX_DAILY_SEARCHES:
                 logger.warning("🛑 Daily search limit reached. Stopping.")
                 break
-                
+
             try:
-                url = search_url if page_num == 1 else f"{search_url}&page={page_num}"
-                
+                page_filters = self._build_people_filters(
+                    skill, self.config.CANDIDATE_TITLE_FILTER or "")
+                page_filters.page = page_num
+                url = build_people_search_url(page_filters)
+
                 await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.REQUEST_TIMEOUT_MS)
                 await human_delay(3, 6)
                 
@@ -1082,17 +1073,14 @@ class LinkedInScraper:
         profile_urls = []
         page_num = 1
 
-        # Build search query
-        search_query = f'"{job_title}" "{company}"'
-
-        search_url = (
-            "https://www.linkedin.com/search/results/people/"
-            "?" + urlencode({
-                "keywords": search_query,
-                "origin": "GLOBAL_SEARCH_HEADER",
-                "geoUrn": f'["{self.config.GEO_URN}"]',
-            })
-        )
+        # Faceted search URL (v5.0). Title + company stay quoted, AND-ed terms;
+        # configured facets (network, current/past company, school, industry,
+        # seniority) are emitted as LinkedIn-native JSON facets. Invalid values
+        # are reported instead of being silently ignored by LinkedIn.
+        base_filters = self._build_people_filters(job_title, company)
+        self._log_search_warnings(base_filters.warnings,
+                                  f"people search '{job_title}' at '{company}'")
+        search_query = base_filters.keywords
 
         logger.info(f"   🔍 '{job_title}' at '{company}'")
 
@@ -1102,7 +1090,9 @@ class LinkedInScraper:
                 break
 
             try:
-                url = search_url if page_num == 1 else f"{search_url}&page={page_num}"
+                page_filters = self._build_people_filters(job_title, company)
+                page_filters.page = page_num
+                url = build_people_search_url(page_filters)
                 await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.REQUEST_TIMEOUT_MS)
                 await human_delay(3, 6)
                 
@@ -1173,6 +1163,7 @@ class LinkedInScraper:
         try:
             await self.page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
             await human_delay(3, 7)
+            await self._maybe_humanize()
             await random_scroll(self.page, scrolls=3)
 
             soup = BeautifulSoup(await self.page.content(), "html.parser")
@@ -1250,9 +1241,14 @@ class LinkedInScraper:
                 "scraped_at":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
+            # v5.0: derive screening fields (location parts, seniority rank,
+            # normalized skills, inferred-email candidates, completeness) and
+            # attach a resume match score when a resume is configured. Both are
+            # additive and fail soft, so the raw scrape is never lost.
+            profile = self._enrich_profile(profile)
             self._count_section_misses(profile)
 
-            # Apply keyword filter if configured
+            # Apply keyword / screening filters if configured
             if self._passes_filter(profile):
                 logger.info(f"   ✅ {profile['name']} | {profile['title']} | {profile['company']}")
                 return profile
@@ -1272,10 +1268,25 @@ class LinkedInScraper:
 
     def _passes_filter(self, profile: dict) -> bool:
         """
-        Returns True if the profile passes the FILTER_KEYWORDS check.
-        If FILTER_KEYWORDS is empty, all profiles pass.
+        Returns True if the profile passes every configured screening rule.
+
+        Rules are applied cheapest-first: client-side flags (open to work,
+        hiring), completeness, resume match score, then the legacy keyword
+        check on title + headline.  Empty/zero settings disable their rule, so
+        the default config accepts everything.
         """
-        if not self.config.FILTER_KEYWORDS:
+        cfg = self.config
+        if getattr(cfg, "OPEN_TO_WORK_ONLY", False) and not profile.get("open_to_work"):
+            return False
+        if getattr(cfg, "HIRING_ONLY", False) and not profile.get("is_hiring"):
+            return False
+        min_completeness = int(getattr(cfg, "MIN_COMPLETENESS", 0) or 0)
+        if min_completeness and int(profile.get("completeness_score") or 0) < min_completeness:
+            return False
+        min_score = float(getattr(cfg, "MATCH_MIN_SCORE", 0) or 0)
+        if min_score and float(profile.get("match_score") or 0) < min_score:
+            return False
+        if not cfg.FILTER_KEYWORDS:
             return True  # No filter = accept everything
 
         text = (
@@ -1357,9 +1368,29 @@ class LinkedInScraper:
         return ""
 
     def _extract_phone(self, soup) -> str:
-        text = soup.get_text()
-        phones = re.findall(r'(\+?1?\s?)?(\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4})', text)
-        return phones[0][1] if phones else ""
+        """Find a phone number only when the page actually presents one.
+
+        LinkedIn hides phone numbers, so "" is the honest default. The previous
+        pattern matched any 10-digit run anywhere in the page and returned the
+        same internal id for every profile (all 46 imported records shared one
+        "phone"). Prefer tel: links, then require visible separators.
+        """
+        link = soup.select_one('a[href^="tel:"]')
+        if link:
+            raw = str(link.get("href", "")).split(":", 1)[-1].split("?")[0].strip()
+            if 7 <= len(re.sub(r"\D", "", raw)) <= 15:
+                return raw
+        text = soup.get_text(" ", strip=True)
+        # 3-3-4 with at least one separator between groups; a bare digit run is
+        # an id, and dates/ids must not become phone numbers.
+        pattern = re.compile(
+            r"(?<![\d])(\+?\d{1,3}[\s.\-]?)?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}(?![\d])"
+        )
+        for match in pattern.finditer(text):
+            candidate = match.group(0).strip()
+            if 10 <= len(re.sub(r"\D", "", candidate)) <= 15:
+                return candidate
+        return ""
 
     def _extract_connections(self, soup) -> str:
         el = soup.select_one(".pv-top-card--list.pv-top-card--list-bullet .t-black--light")
@@ -1965,6 +1996,8 @@ class LinkedInScraper:
             if profile:
                 self.results.append(profile)
                 self.scraped_urls.add(f["url"])
+                self.scraped_urls.add(canonical_profile_url(f["url"]) or f["url"])
+                self._remember_profile(profile)
                 self.telemetry["records_scraped"] = len(self.results)
                 recovered += 1
             await human_delay(
@@ -2079,9 +2112,17 @@ class LinkedInScraper:
         self._telemetry_event("login", f"{'ok' if ok else 'fail'}: {reason}")
 
     def _register_search(self):
-        """Count one search-page load (daily cap + live telemetry counter)."""
-        self._register_search()
+        """Count one search-page load (daily cap + live telemetry counter).
+
+        v5.0 fix: this used to call itself recursively, so every search raised
+        RecursionError into the caller's except-block and the daily cap was
+        never actually enforced. One search page = one increment.
+        """
+        self.daily_searches += 1
         self.telemetry["daily_searches"] = self.daily_searches
+        if self.daily_searches >= self.config.MAX_DAILY_SEARCHES:
+            logger.warning(f"🛑 Daily search limit reached ({self.daily_searches}).")
+            self._telemetry_event("limit", "daily search cap reached")
 
     def _finalize_telemetry(self, mode: str, recovered: int = 0):
         """Mark the run finished and move it into session_health history."""
@@ -2099,22 +2140,346 @@ class LinkedInScraper:
         except Exception as e:
             logger.warning(f"⚠️  Could not write session-health telemetry: {e}")
 
+    # ─────────────────────────────────────────────
+    #  POWER STACK (v5.0)
+    #  Faceted search, enrichment, resume scoring, SQLite storage,
+    #  multi-format exports and a per-run event log. Each piece is
+    #  optional and fails soft: a broken database or export must never
+    #  cost you a successfully scraped profile.
+    # ─────────────────────────────────────────────
+
+    def _emit(self, kind: str, detail: str = "", **data) -> None:
+        """Write one event to the run's JSONL log and the SQLite event table."""
+        if self.event_log is not None:
+            try:
+                self.event_log.emit(kind, detail=detail, **data)
+            except Exception:
+                pass
+        if self.store is not None:
+            self.store.log_event(kind, detail, run_id=self.run_id)
+
+    def _warn_once(self, message: str) -> None:
+        if message and message not in self._warned:
+            self._warned.add(message)
+            logger.warning(f"   [search filter] {message}")
+
+    def _log_search_warnings(self, warnings, context: str) -> None:
+        for warning in warnings or []:
+            self._warn_once(f"{context}: {warning}")
+
+    def _build_people_filters(self, job_title: str = "", company: str = "",
+                              extra_terms=()) -> PeopleFilters:
+        """Translate config into a validated, faceted people-search filter."""
+        cfg = self.config
+        terms = [term for term in (job_title, company) if term]
+        terms.extend(extra_terms or ())
+        keywords = build_keywords(
+            terms,
+            boolean_or=bool(getattr(cfg, "KEYWORD_BOOLEAN_OR", False)),
+            exclude=getattr(cfg, "EXCLUDE_KEYWORDS", []) or [],
+        )
+        geo_ids = []
+        geo_urn = str(getattr(cfg, "GEO_URN", "") or "").strip()
+        if geo_urn:
+            ids, warning = resolve_geo(geo_urn)
+            if warning:
+                self._warn_once(warning)
+            geo_ids = ids
+        return PeopleFilters(
+            keywords=keywords,
+            geo_ids=geo_ids,
+            network=list(getattr(cfg, "NETWORK_FILTER", []) or []),
+            current_company_ids=list(getattr(cfg, "CURRENT_COMPANY_FILTER", []) or []),
+            past_company_ids=list(getattr(cfg, "PAST_COMPANY_FILTER", []) or []),
+            school_ids=list(getattr(cfg, "SCHOOL_FILTER", []) or []),
+            industry_ids=list(getattr(cfg, "INDUSTRY_FILTER", []) or []),
+            seniority=list(getattr(cfg, "SENIORITY_FILTER", []) or []),
+        ).validate()
+
+    def _build_job_filters(self, keyword: str, start: int = 0) -> JobFilters:
+        """Translate config into a validated job-search filter (offset paging)."""
+        cfg = self.config
+        strict = getattr(cfg, "JOB_STRICT_HOURS_FILTER", None)
+        if strict is not None:
+            if strict <= 24:
+                date_posted = "r86400"
+            elif strict <= 168:
+                date_posted = "r604800"
+            else:
+                date_posted = "r2592000"
+        else:
+            date_posted = str(getattr(cfg, "JOB_DATE_POSTED", "") or "")
+        experience = [str(cfg.JOB_EXPERIENCE_LEVEL)] if cfg.JOB_EXPERIENCE_LEVEL else []
+        workplace = [str(cfg.JOB_REMOTE_FILTER)] if cfg.JOB_REMOTE_FILTER else []
+        return JobFilters(
+            keywords=keyword,
+            location=str(getattr(cfg, "SEARCH_LOCATION_NAME", "") or ""),
+            geo_id=str(getattr(cfg, "GEO_URN", "") or "") or None,
+            date_posted=date_posted,
+            experience_levels=experience,
+            workplace=workplace,
+            easy_apply=bool(getattr(cfg, "JOB_EASY_APPLY", False)),
+            sort_by=str(getattr(cfg, "JOB_SORT_BY", "") or ""),
+            start=start,
+        ).validate()
+
+    def _enrich_profile(self, profile: dict) -> dict:
+        """Add derived screening fields and, when configured, a resume score."""
+        cfg = self.config
+        if not getattr(cfg, "ENRICH_PROFILES", True):
+            return profile
+        try:
+            enriched = enrich_record(
+                profile,
+                infer_email=bool(getattr(cfg, "INFER_EMAILS", True)),
+                domains=getattr(cfg, "COMPANY_DOMAINS", None) or None,
+            )
+        except Exception as exc:
+            logger.debug(f"enrichment skipped: {exc}")
+            enriched = profile
+        if self.resume_weights and getattr(cfg, "SCORE_WITH_RESUME", True):
+            try:
+                enriched = score_record(enriched, self.resume_weights)
+            except Exception as exc:
+                logger.debug(f"scoring skipped: {exc}")
+        return enriched
+
+    def _already_seen(self, url: str) -> bool:
+        """Dedupe across this run *and* every previous run (SQLite)."""
+        if not url:
+            return True
+        canonical = canonical_profile_url(url) or url
+        if url in self.scraped_urls or canonical in self.scraped_urls:
+            return True
+        if self.store is not None:
+            try:
+                if self.store.record_exists(url):
+                    self.scraped_urls.add(canonical)
+                    self.scraped_urls.add(url)
+                    return True
+            except Exception as exc:
+                logger.debug(f"store lookup failed: {exc}")
+        return False
+
+    def _remember_profile(self, profile: dict) -> None:
+        """Count a successful profile and persist/merge it in the store."""
+        self.profiles_this_run += 1
+        if self.store is None:
+            return
+        try:
+            result = self.store.upsert_record(profile, run_id=self.run_id)
+        except Exception as exc:
+            logger.warning(f"   Could not persist profile: {exc}")
+            return
+        if result["status"] == "inserted":
+            self.new_records += 1
+        elif result["status"] == "updated":
+            self.updated_records += 1
+        self._emit("profile", str(profile.get("name") or ""),
+                   status=result["status"], url=profile.get("linkedin_url", ""))
+
+    def _start_power_stack(self, mode: str) -> None:
+        """Open the store + event log for this run (never raises)."""
+        cfg = self.config
+        if getattr(cfg, "ENABLE_DATABASE", True):
+            self.store = open_store(getattr(cfg, "DATABASE_FILE", "output/scraper.db"))
+            if self.store is not None:
+                try:
+                    self.run_id = self.store.start_run(mode, {
+                        "location": getattr(cfg, "SEARCH_LOCATION_NAME", ""),
+                        "titles": len(getattr(cfg, "JOB_TITLES", []) or []),
+                        "version": "5.0",
+                    })
+                except Exception as exc:
+                    logger.warning(f"Could not start a run record: {exc}")
+        if getattr(cfg, "ENABLE_EVENT_LOG", True):
+            try:
+                run_dir = Path(getattr(cfg, "EVENT_LOG_DIR", "output/runs"))
+                stamp = self.run_id or datetime.now().strftime("%Y%m%d-%H%M%S")
+                self.event_log = EventLog(str(run_dir / f"{stamp}.jsonl"))
+            except Exception as exc:
+                logger.debug(f"event log disabled: {exc}")
+        self._emit("run_start", mode=mode,
+                   location=getattr(cfg, "SEARCH_LOCATION_NAME", ""))
+
+    def _load_resume_weights(self, mode: str) -> dict:
+        """Keyword weights from the configured resume ({} when not usable)."""
+        cfg = self.config
+        if mode == "jobs" or not getattr(cfg, "SCORE_WITH_RESUME", True):
+            return {}
+        path = str(getattr(cfg, "RESUME_FILE_PATH", "") or "")
+        if not path or not Path(path).exists():
+            return {}
+        try:
+            weights = keyword_weights(read_resume_text(path))
+        except Exception as exc:
+            logger.debug(f"resume scoring disabled: {exc}")
+            return {}
+        if weights:
+            logger.info(f"Resume scoring enabled: {len(weights)} weighted keywords.")
+        return weights
+
+    async def _after_login(self) -> None:
+        """Warm the session up like a returning user (bounded, never fatal)."""
+        if not getattr(self.config, "WARM_UP_BROWSER", True):
+            return
+        try:
+            ok = await warm_up(self.page, seconds=random.uniform(8, 16))
+        except Exception as exc:
+            logger.debug(f"warm-up failed: {exc}")
+            ok = False
+        self._emit("warmup", "ok" if ok else "skipped")
+        if ok:
+            logger.info("Warm-up browse complete.")
+
+    async def _maybe_humanize(self) -> None:
+        """Pointer movement + occasional idle scroll before reading a page."""
+        if not getattr(self.config, "HUMAN_MOUSE", True):
+            return
+        try:
+            await human_mouse_move(self.page, moves=random.randint(1, 2))
+            await idle_jitter(self.page, chance=0.35)
+        except Exception:
+            pass
+
+    def _cap_reached(self) -> bool:
+        cap = int(getattr(self.config, "MAX_PROFILES_PER_RUN", 0) or 0)
+        return bool(cap and self.profiles_this_run >= cap)
+
+    def _complete_search(self, key: str, completed_keys: set) -> None:
+        """Checkpoint one finished search in progress.json and the database."""
+        completed_keys.add(key)
+        try:
+            save_progress(self.config.PROGRESS_FILE, {
+                "results": self.results,
+                "completed_keys": list(completed_keys),
+            })
+        except Exception as exc:
+            logger.warning(f"Could not save progress: {exc}")
+        if self.store is not None:
+            try:
+                self.store.mark_search_done(key, run_id=self.run_id)
+            except Exception:
+                pass
+        self._emit("search_done", key)
+
+    async def _scrape_profile_urls(self, urls, search_company: str, job_title: str,
+                                   skill: str = "") -> int:
+        """Scrape every not-yet-seen profile URL from one search result page."""
+        if not urls:
+            logger.info("      No results found.")
+            return 0
+        fresh = [url for url in dict.fromkeys(urls) if not self._already_seen(url)]
+        skipped = len(set(urls)) - len(fresh)
+        if skipped:
+            logger.info(f"      Skipped {skipped} already-scraped profile(s)")
+        if not fresh:
+            return 0
+        logger.info(f"      Found {len(fresh)} new profiles to scrape...")
+        scraped = 0
+        for index, url in enumerate(fresh, 1):
+            if self._cap_reached():
+                logger.info(f"      Per-run profile cap reached "
+                            f"({self.config.MAX_PROFILES_PER_RUN}) - stopping this search.")
+                self._stop_reason = "profile cap"
+                break
+            logger.info(f"      [{index}/{len(fresh)}] Scraping...")
+            profile = await self.scrape_profile(url, search_company=search_company,
+                                                job_title=job_title)
+            if profile:
+                if skill:
+                    profile["search_skill"] = skill
+                self.results.append(profile)
+                self.scraped_urls.add(url)
+                self.scraped_urls.add(canonical_profile_url(url) or url)
+                self._remember_profile(profile)
+                scraped += 1
+                self.telemetry["records_scraped"] = len(self.results)
+
+            await human_delay(
+                self.config.MIN_DELAY_BETWEEN_PROFILES,
+                self.config.MAX_DELAY_BETWEEN_PROFILES,
+            )
+            self.session_count += 1
+            if self.session_count % self.config.BREAK_EVERY_N_REQUESTS == 0:
+                await self._take_session_break()
+            if self.config.ROTATE_USER_AGENT and self.session_count % self.config.UA_ROTATE_EVERY_N == 0:
+                await self._rotate_identity()
+        return scraped
+
+    def _export_results(self, mode: str) -> dict:
+        """Write every configured format; returns {format: path}."""
+        formats = list(getattr(self.config, "EXPORT_FORMATS", []) or [])
+        if not formats or not self.results:
+            return {}
+        from exporters import export_all
+
+        base = {
+            "jobs": self.config.JOBS_OUTPUT_FILE,
+            "candidates": self.config.CANDIDATES_OUTPUT_FILE,
+        }.get(mode, self.config.OUTPUT_FILE)
+        meta = {
+            "title": f"LinkedIn {mode.title()} Export",
+            "mode": mode,
+            "run_id": self.run_id,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "location": getattr(self.config, "SEARCH_LOCATION_NAME", ""),
+        }
+        try:
+            written = export_all(self.results, base, formats=formats, mode=mode, meta=meta)
+        except Exception as exc:
+            logger.error(f"Export failed ({exc.__class__.__name__}: {exc})")
+            return {}
+        for fmt, path in written.items():
+            logger.info(f"   {fmt}: {path}")
+        self._emit("export", ", ".join(written.keys()))
+        return written
+
+    def _finish_power_stack(self, mode: str, recovered: int = 0,
+                            written: Optional[dict] = None) -> dict:
+        """Close out the run: export, summarize, persist, release the store."""
+        written = written if written is not None else {}
+        summary = {
+            "mode": mode,
+            "records": len(self.results),
+            "profiles_this_run": self.profiles_this_run,
+            "new_in_db": self.new_records,
+            "updated_in_db": self.updated_records,
+            "failed_urls": len(self.failed_urls),
+            "recovered": recovered,
+            "searches": self.daily_searches,
+            "run_id": self.run_id,
+            "exports": written,
+            "stop_reason": self._stop_reason,
+        }
+        if self.store is not None:
+            try:
+                self.store.finish_run(self.run_id, summary)
+            except Exception as exc:
+                logger.debug(f"could not finalize run row: {exc}")
+        self._emit("run_end", f"{len(self.results)} records", **summary)
+        return summary
+
     async def run(self, input_list: list):
         """
         Main loop:
           If mode="people": search for titles at given companies
           If mode="jobs": search for job listings from input keywords
           If mode="candidates": search for candidates from input skills
+
+        v5.0: also seeds cross-run state (SQLite + event log + resume scoring),
+        persists every new profile as it is scraped, honours MAX_PROFILES_PER_RUN,
+        and returns a summary dict (also stored on the run row).
         """
         setup_logging(self.config.LOG_FILE)
-        
+
         mode = self.config.SEARCH_MODE.lower()
         self.telemetry["mode"] = mode
         self.telemetry["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._telemetry_event("run_start", f"{mode} mode")
 
         logger.info("=" * 65)
-        logger.info(f"  LinkedIn Scraper v3.0 — Mode: {mode.upper()}")
+        logger.info(f"  LinkedIn Scraper v5.0 - Mode: {mode.upper()}")
         logger.info(f"  Location   : {self.config.SEARCH_LOCATION_NAME}")
         logger.info("=" * 65)
 
@@ -2124,137 +2489,101 @@ class LinkedInScraper:
         # Don't re-scrape profiles already captured in a previous run.
         self.scraped_urls = {r.get("linkedin_url") for r in self.results if r.get("linkedin_url")}
 
-        await self._launch_browser()
+        # Cross-run state: SQLite store + JSONL event log + resume scoring.
+        self._start_power_stack(mode)
+        if self.store is not None:
+            try:
+                completed_keys |= set(self.store.completed_keys())
+                if getattr(self.config, "IMPORT_PROGRESS_ON_START", True):
+                    self.store.import_progress(self.config.PROGRESS_FILE, run_id=self.run_id)
+            except Exception as exc:
+                logger.debug(f"store seeding skipped: {exc}")
+        self.resume_weights = self._load_resume_weights(mode)
+
+        summary = None
 
         try:
+            await self._launch_browser()
             if not await self.login():
-                logger.error("❌ Login failed. Exiting.")
-                return
+                logger.error("Login failed. Exiting.")
+                self._stop_reason = "login failed"
+                return None
 
+            await self._after_login()
             total = len(input_list)
-            
+            resume_done = getattr(self.config, "RESUME_COMPLETED_SEARCHES", True)
+
             # --- PEOPLE SEARCH MODE ---
             if mode == "people":
                 for i, company in enumerate(input_list, 1):
-                    logger.info(f"\n[{i}/{total}] 🏢 {company}")
+                    if self._cap_reached():
+                        break
+                    logger.info(f"\n[{i}/{total}] {company}")
 
                     for job_title in self.config.JOB_TITLES:
                         key = f"people::{company}::{job_title}"
-                        if key in completed_keys:
-                            logger.info(f"   ⏭️  Already done: '{job_title}' — skipping")
+                        if resume_done and key in completed_keys:
+                            logger.info(f"   Already done: '{job_title}' - skipping")
                             continue
 
                         profile_urls = await self.search_people(company, job_title)
-
-                        if not profile_urls:
-                            logger.info(f"      No results found.")
-                        else:
-                            fresh = [u for u in profile_urls if u not in self.scraped_urls]
-                            skipped = len(profile_urls) - len(fresh)
-                            if skipped:
-                                logger.info(f"      Skipped {skipped} already-scraped profile(s)")
-                            logger.info(f"      Found {len(fresh)} new profiles to scrape...")
-                            for j, url in enumerate(fresh, 1):
-                                logger.info(f"      [{j}/{len(fresh)}] Scraping...")
-                                profile = await self.scrape_profile(url, search_company=company, job_title=job_title)
-                                if profile:
-                                    self.results.append(profile)
-                                    self.scraped_urls.add(url)
-                                    self.telemetry["records_scraped"] = len(self.results)
-
-                                await human_delay(
-                                    self.config.MIN_DELAY_BETWEEN_PROFILES,
-                                    self.config.MAX_DELAY_BETWEEN_PROFILES
-                                )
-                                self.session_count += 1
-                                if self.session_count % self.config.BREAK_EVERY_N_REQUESTS == 0:
-                                    await self._take_session_break()
-                                if self.config.ROTATE_USER_AGENT and self.session_count % self.config.UA_ROTATE_EVERY_N == 0:
-                                    await self._rotate_identity()
-
-                        completed_keys.add(key)
-                        save_progress(self.config.PROGRESS_FILE, {
-                            "results": self.results,
-                            "completed_keys": list(completed_keys)
-                        })
+                        await self._scrape_profile_urls(profile_urls, company, job_title)
+                        self._complete_search(key, completed_keys)
                         await human_delay(4, 10)
 
             # --- JOB SEARCH MODE ---
             elif mode == "jobs":
                 for i, keyword in enumerate(input_list, 1):
-                    logger.info(f"\n[{i}/{total}] 💼 Keyword: {keyword}")
-                    
+                    logger.info(f"\n[{i}/{total}] Keyword: {keyword}")
+
                     key = f"jobs::{keyword}"
-                    if key in completed_keys:
-                        logger.info(f"   ⏭️  Already done: '{keyword}' — skipping")
+                    if resume_done and key in completed_keys:
+                        logger.info(f"   Already done: '{keyword}' - skipping")
                         continue
-                        
+
                     jobs = await self.search_jobs(keyword)
-                    
+
                     if not jobs:
-                        logger.info(f"      No jobs found.")
+                        logger.info("      No jobs found.")
                     else:
-                        # Append search keyword context
-                        for j in jobs:
-                            j['search_keyword'] = keyword
+                        for job in jobs:
+                            job["search_keyword"] = keyword
                         self.results.extend(jobs)
-                        
-                    completed_keys.add(key)
-                    save_progress(self.config.PROGRESS_FILE, {
-                        "results": self.results,
-                        "completed_keys": list(completed_keys)
-                    })
+
+                    self._complete_search(key, completed_keys)
                     await human_delay(4, 10)
 
             # --- CANDIDATES SEARCH MODE ---
             elif mode == "candidates":
                 for i, skill in enumerate(input_list, 1):
-                    logger.info(f"\n[{i}/{total}] 👤 Skill: {skill}")
-                    
+                    if self._cap_reached():
+                        break
+                    logger.info(f"\n[{i}/{total}] Skill: {skill}")
+
                     key = f"candidates::{skill}"
-                    if key in completed_keys:
-                        logger.info(f"   ⏭️  Already done: '{skill}' — skipping")
+                    if resume_done and key in completed_keys:
+                        logger.info(f"   Already done: '{skill}' - skipping")
                         continue
-                        
+
                     profile_urls = await self.search_candidates(skill)
-                    
-                    if not profile_urls:
-                        logger.info(f"      No results found.")
-                    else:
-                        fresh = [u for u in profile_urls if u not in self.scraped_urls]
-                        skipped = len(profile_urls) - len(fresh)
-                        if skipped:
-                            logger.info(f"      Skipped {skipped} already-scraped candidate(s)")
-                        logger.info(f"      Found {len(fresh)} candidates to scrape...")
-                        for j, url in enumerate(fresh, 1):
-                            logger.info(f"      [{j}/{len(fresh)}] Scraping...")
-                            # we pass search_company="N/A" because this is pure skill search
-                            profile = await self.scrape_profile(url, search_company="N/A", job_title=skill)
-                            if profile:
-                                profile['search_skill'] = skill
-                                self.results.append(profile)
-                                self.scraped_urls.add(url)
-                                self.telemetry["records_scraped"] = len(self.results)
-
-                            await human_delay(
-                                self.config.MIN_DELAY_BETWEEN_PROFILES,
-                                self.config.MAX_DELAY_BETWEEN_PROFILES
-                            )
-                            self.session_count += 1
-                            if self.session_count % self.config.BREAK_EVERY_N_REQUESTS == 0:
-                                await self._take_session_break()
-                            if self.config.ROTATE_USER_AGENT and self.session_count % self.config.UA_ROTATE_EVERY_N == 0:
-                                await self._rotate_identity()
-
-                    completed_keys.add(key)
-                    save_progress(self.config.PROGRESS_FILE, {
-                        "results": self.results,
-                        "completed_keys": list(completed_keys)
-                    })
+                    # search_company="N/A" because this is a pure skill search.
+                    await self._scrape_profile_urls(profile_urls, "N/A", skill, skill=skill)
+                    self._complete_search(key, completed_keys)
                     await human_delay(4, 10)
 
         except KeyboardInterrupt:
-            logger.info("\n⚠️  Interrupted. Saving progress...")
+            logger.info("\nInterrupted. Saving progress...")
+            self._stop_reason = "interrupted"
+
+        except Exception as exc:
+            # A dead proxy, a missing browser build or a closed driver should
+            # end the run with a clear message (and a full traceback in the log
+            # file), not a bare crash that skips the export and the run record.
+            logger.exception(f"Run aborted: {exc.__class__.__name__}: {exc}")
+            logger.error("Hint: `playwright install chromium` fixes the most common "
+                         "launch error; check the proxy if launch fails with it.")
+            self._stop_reason = self._stop_reason or f"error: {exc.__class__.__name__}"
+            self._emit("error", str(exc)[:500])
 
         finally:
             # One last chance for profiles that failed transiently.
@@ -2263,41 +2592,37 @@ class LinkedInScraper:
                 try:
                     recovered = await self._retry_failed_profiles()
                 except Exception as e:
-                    logger.warning(f"⚠️  Failed-URL retry pass errored: {e}")
+                    logger.warning(f"Failed-URL retry pass errored: {e}")
 
+            written = self._export_results(mode)
             if self.results:
-                # Decide which export function to use based on mode
-                if mode == "jobs":
-                    from utils import export_jobs_to_excel
-                    path = export_jobs_to_excel(self.results, self.config.JOBS_OUTPUT_FILE)
-                elif mode == "candidates":
-                    from utils import export_candidates_to_excel
-                    path = export_candidates_to_excel(self.results, self.config.CANDIDATES_OUTPUT_FILE)
-                else:
-                    path = export_to_excel(self.results, self.config.OUTPUT_FILE)
-                    
-                logger.info(f"\n🎉 Exported {len(self.results)} records → {path}")
-                
-                # Send Webhook Notification
+                primary = written.get("xlsx") or next(iter(written.values()), "")
+                logger.info(f"\nExported {len(self.results)} records -> {primary or 'no files'}")
+
                 if self.config.DISCORD_WEBHOOK_URL:
                     from utils import send_webhook_notification
-                    summary = {
+                    summary_payload = {
                         "Mode": mode.upper(),
                         "Total Records": len(self.results),
+                        "New": self.new_records,
+                        "Updated": self.updated_records,
                         "Searches Done": self.daily_searches,
-                        "Output File": path
+                        "Output File": primary,
                     }
-                    send_webhook_notification(self.config.DISCORD_WEBHOOK_URL, "Scrape Complete!", summary)
+                    send_webhook_notification(
+                        self.config.DISCORD_WEBHOOK_URL, "Scrape Complete!", summary_payload)
             else:
-                logger.info("\n⚠️  No results to export.")
+                logger.info("\nNo results to export.")
 
             if self.browser:
                 await self.browser.close()
             if self.playwright:
                 await self.playwright.stop()
 
-            logger.info(f"\n📊 Final Summary:")
+            logger.info("\nFinal Summary:")
             logger.info(f"   Records saved   : {len(self.results)}")
+            logger.info(f"   New this run    : {self.new_records} new, "
+                        f"{self.updated_records} updated")
             if mode != "jobs":
                 logger.info(f"   Failed URLs     : {len(self.failed_urls)}")
             logger.info(f"   Searches done   : {self.daily_searches} page loads")
@@ -2306,3 +2631,12 @@ class LinkedInScraper:
             self._log_section_coverage(len(self.results))
 
             self._finalize_telemetry(mode, recovered)
+            summary = self._finish_power_stack(mode, recovered, written)
+            if self.store is not None:
+                try:
+                    self.store.close()
+                except Exception:
+                    pass
+                self.store = None
+
+        return summary

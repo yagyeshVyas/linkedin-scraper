@@ -289,3 +289,55 @@ class Config:
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     ])
+
+    # ══════════════════════════════════════════════
+    #  ⚡ POWER FEATURES (v5.0)
+    #  Every default preserves the classic behaviour.
+    # ══════════════════════════════════════════════
+
+    # ── Faceted people search ──
+    # Network degree: "F" (1st), "S" (2nd), "O" (3rd+). Empty = everyone.
+    NETWORK_FILTER: List[str] = field(default_factory=lambda: [])
+    # Numeric LinkedIn IDs only — LinkedIn silently ignores plain-text names.
+    CURRENT_COMPANY_FILTER: List[str] = field(default_factory=lambda: [])
+    PAST_COMPANY_FILTER: List[str] = field(default_factory=lambda: [])
+    SCHOOL_FILTER: List[str] = field(default_factory=lambda: [])
+    INDUSTRY_FILTER: List[str] = field(default_factory=lambda: [])
+    # "mid_senior", "director", "executive", ... or raw 1-6 codes.
+    SENIORITY_FILTER: List[str] = field(default_factory=lambda: [])
+    # Join quoted terms with OR instead of AND (wider recall).
+    KEYWORD_BOOLEAN_OR: bool = False
+    # Appended to every people query as NOT "term".
+    EXCLUDE_KEYWORDS: List[str] = field(default_factory=lambda: [])
+
+    # ── Client-side screening (applied after a profile is scraped) ──
+    OPEN_TO_WORK_ONLY: bool = False
+    HIRING_ONLY: bool = False
+    MIN_COMPLETENESS: int = 0          # 0-100; 0 disables the check
+
+    # ── Storage / incremental runs ──
+    ENABLE_DATABASE: bool = True
+    DATABASE_FILE: str = "output/scraper.db"
+    IMPORT_PROGRESS_ON_START: bool = True
+    RESUME_COMPLETED_SEARCHES: bool = True   # False re-runs finished searches
+    MAX_PROFILES_PER_RUN: int = 0            # 0 = no cap
+
+    # ── Enrichment ──
+    ENRICH_PROFILES: bool = True
+    INFER_EMAILS: bool = True                # labelled "inferred", never verified
+    COMPANY_DOMAINS: dict = field(default_factory=dict)  # name -> domain overrides
+
+    # ── Resume match scoring ──
+    SCORE_WITH_RESUME: bool = True
+    MATCH_MIN_SCORE: int = 0                 # drop profiles below this score
+
+    # ── Exports ──
+    # "xlsx" only by default; add "csv", "json", "jsonl", "md", "html".
+    EXPORT_FORMATS: List[str] = field(default_factory=lambda: ["xlsx"])
+    HTML_REPORT_FILE: str = "output/report.html"
+
+    # ── Human-like behaviour / observability ──
+    WARM_UP_BROWSER: bool = True             # browse the feed after login
+    HUMAN_MOUSE: bool = True                 # pointer paths + wheel scrolling
+    ENABLE_EVENT_LOG: bool = True
+    EVENT_LOG_DIR: str = "output/runs"

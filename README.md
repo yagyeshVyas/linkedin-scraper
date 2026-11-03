@@ -28,6 +28,7 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 ## 📋 Table of Contents
 
 - [What It Does](#-what-it-does)
+- [Power Stack (v5.0)](#-power-stack-v50)
 - [Project Structure](#-project-structure)
 - [Requirements](#-requirements)
 - [Installation](#-installation)
@@ -60,6 +61,48 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 
 ---
 
+## ⚡ Power Stack (v5.0)
+
+The scraper is now a small sourcing platform, not just an Excel writer. Every
+piece is optional and **switched on by default where it is safe**; the classic
+menu flow still works exactly as before.
+
+| Capability | What it does | Module |
+| --- | --- | --- |
+| **Faceted search** | 2nd-degree / current company / past company / school / industry / seniority / boolean OR / NOT — rendered into real LinkedIn facets instead of being silently ignored | `search_filters.py` |
+| **Enrichment** | splits names, parses city/region/country, normalizes phones to E.164, canonicalizes skills, ranks seniority, guesses department, scores completeness, and infers *clearly-labelled* email candidates | `enrichment.py` |
+| **Resume matching** | weights your resume (or a job description), scores every profile 0-100 against it, explains the matches, ranks the pool | `scoring.py` |
+| **Cross-run database** | SQLite store keys every profile by public id, merges re-scrapes instead of overwriting, skips anything seen in any previous run, and records runs/searches/events | `storage.py` |
+| **Multi-format export** | XLSX (unchanged), CSV (UTF-8 BOM for Excel), JSON, JSONL, Markdown summary, and a self-contained HTML report with charts | `exporters.py` |
+| **MCP server** | exposes the pool to AI agents over stdio (list/get/search/export/build-search-url) with zero dependencies | `mcp_server.py` |
+| **Automation CLI** | `run`, `export`, `stats`, `report`, `mcp`, `doctor`, `db` — non-interactive, exit codes, no prompts | `cli.py` |
+| **Human behaviour** | curved pointer paths, uneven wheel scrolling, a feed warm-up after login, idle jitter | `behavior.py` |
+| **Per-run event log** | JSONL under `output/runs/` plus the SQLite `events` table for post-mortems | `storage.EventLog` |
+
+Full guide with field tables, URL grammar and examples: **[POWER_STACK.md](POWER_STACK.md)**.
+
+```bash
+# Faceted search: 2nd-degree directors/recruiters at Google in the US
+python cli.py run --mode people --companies Google --titles Recruiter \
+    --network S --seniority director --location "United States"
+
+# Jobs with real filters, then every export format
+python cli.py run --mode jobs --keywords "data engineer" \
+    --formats xlsx,csv,json,jsonl,md,html
+
+# Everything already stored, re-exported + analysed
+python cli.py export --format all
+python cli.py stats
+python cli.py report --out output/report.html
+```
+
+> **Why the filters matter:** LinkedIn *silently ignores* a plain-text
+> `location=` or `currentCompany=` on people search and returns the unfiltered
+> result set — a search that reads as scoped but isn't. This build refuses
+> invalid facet values and tells you, instead of pretending the filter applied.
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -78,15 +121,29 @@ linkedin-scraper/
 ├── resume_parser.py           ← Parses and structures profile data
 ├── Requirements.txt           ← Python dependencies
 │
+├── cli.py                     ← Automation CLI (run/export/stats/report/mcp/doctor/db)
+├── search_filters.py          ← LinkedIn URL grammar + faceted search filters
+├── enrichment.py              ← Names, locations, phones, skills, emails, dedupe keys
+├── scoring.py                 ← Resume match + ICP fit scoring
+├── storage.py                 ← SQLite store, cross-run dedupe, run history, event log
+├── exporters.py               ← CSV / JSON / JSONL / Markdown / HTML report
+├── behavior.py                ← Human pointer paths, wheel scrolling, warm-up
+├── mcp_server.py              ← Dependency-free MCP server (stdio) over the database
+├── POWER_STACK.md             ← Full guide to the v5.0 features
+│
 ├── dashboard_template.html    ← Dashboard UI source of truth
 ├── generate_dashboard.py      ← Builds dashboard.html from output/ (stdlib only)
 ├── dashboard.html             ← Generated live dashboard (open in a browser)
 │
 ├── test_scraper_fixes.py      ← Behavioral tests (no browser needed)
 ├── test_login_flow.py         ← Drives the real login() against fakes
+├── test_power_features.py     ← 58 tests for the v5.0 stack (no browser needed)
 │
 ├── output/                    ← Auto-created on first run
 │   ├── linkedin_results.xlsx  ← Your exported Excel data
+│   ├── linkedin_results.csv   ← CSV / JSON / JSONL / MD / HTML (when enabled)
+│   ├── scraper.db             ← SQLite: unique profiles, runs, searches, events
+│   ├── runs/*.jsonl           ← Per-run event log
 │   ├── progress.json          ← Auto-save checkpoint (resume feature)
 │   ├── proxies.json           ← Cached working proxy list
 │   ├── scraper.log            ← Full activity log

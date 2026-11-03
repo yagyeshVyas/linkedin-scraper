@@ -85,6 +85,53 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   drives the real `login()` against fakes). No pytest in the venv — each file is a plain script
   with a `__main__` runner list; add new tests to that list.
 
+## Power stack (v5.0, 2026-11)
+
+- New modules, all stdlib-only and import-safe (no browser/network at import):
+  `search_filters.py` (URL grammar + facet validation), `enrichment.py` (derived fields),
+  `scoring.py` (resume + ICP), `storage.py` (SQLite + EventLog), `exporters.py`
+  (csv/json/jsonl/md/html + `export_all`), `behavior.py` (human pointer/scroll/warm-up),
+  `mcp_server.py` (JSON-RPC over stdio), `cli.py` (run/export/stats/report/mcp/doctor/db).
+  `main.py` keeps the old menu and `build_parser()`; `test_cli_parser` depends on it.
+- `linkedin_scraper.run()` now returns a summary dict and owns a "power stack" block of
+  helpers (`_start_power_stack`, `_scrape_profile_urls`, `_complete_search`, `_export_results`,
+  `_finish_power_stack`). All of them are fail-soft: a missing database, export or event-log
+  error must never lose a scraped profile. `run()` returns from `finally`-adjacent code, not
+  inside `finally`, so KeyboardInterrupt is not swallowed.
+- Critical fixed bug: `_register_search()` used to call itself recursively, so every search
+  page raised `RecursionError` into the caller's except-block (counted as an error and
+  triggered a pointless identity rotation) and `daily_searches` never advanced. One search
+  page now increments exactly once — do not reintroduce a call to any "count" helper inside it.
+- `_scrape_profile_urls()` is the single profile loop for people and candidates mode. It
+  dedupes through `_already_seen()` (in-memory + SQLite `record_exists`), persists each
+  profile with `_remember_profile()`, and enforces `MAX_PROFILES_PER_RUN` via `_cap_reached()`.
+  Add per-profile behaviour there, not in the three mode loops.
+- Faceted search invariant: LinkedIn silently ignores plain-text `location`/`currentCompany`
+  on people search. `PeopleFilters.validate()` therefore rejects non-numeric company/school/
+  industry ids and unknown place names and records warnings; `_log_search_warnings` prints
+  them once. Do not "helpfully" emit a name facet — that is the bug where a filtered search
+  returns the whole world. Verified job params are `geoId`/`f_TPR`/`f_E`/`f_JT`/`f_WT`/`f_EA`
+  (easy apply is `f_EA`, not `f_AL`) and paging is `start`, not `page`.
+- Enrichment is additive and must stay that way: `enrich_record()` returns a copy, never
+  overwrites a scraped value with a worse one, and labels guessed emails `email_status:
+  "inferred"` + `verified: false`. `email` stays empty unless it was scraped. Department
+  matching uses `_has_keyword()` with `*` suffix meaning word-prefix — plain substring matching
+  routed "Talent Acquisition" to Design because "ui" is inside "acquisition".
+- SQLite (`output/scraper.db`) upserts merge via `enrichment.merge_record`: blank incoming
+  fields never erase stored ones, `seen_count`/`first_seen`/`first_run` are metadata and are
+  skipped by the merge, and `_decode()` always overrides those from the row. `record_exists()`
+  normalises any URL variant to the public id, so `?trk=` and `uk.linkedin.com` are the same
+  person. Jobs are deliberately NOT stored in SQLite (profile-centric schema).
+- `test_power_features.py` (58 tests) is the third suite. It covers URL facets/encoding,
+  enrichment edge cases (mojibake, metro/remote locations, E.164, name particles), scoring
+  bounds and word boundaries (`java` ≠ `javascript`), SQLite merge/filters/prune, every
+  exporter (including HTML escaping of a `<script>` name), MCP dispatcher failures, and the
+  scraper integration (`_register_search`, faceted search URL, post-scrape enrichment,
+  `_finish_power_stack`). Run all three suites before claiming a change works.
+- MCP is read-only over the database by design. It must never launch a browser or touch
+  LinkedIn directly; scraping stays in `cli.py run`. stdout is protocol-only — log to stderr.
+
+
 ## Security
 
 - `config.py` hardcodes real-looking LinkedIn credentials as field defaults and they are in

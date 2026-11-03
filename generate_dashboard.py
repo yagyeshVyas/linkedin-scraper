@@ -25,6 +25,9 @@ ROOT = Path(__file__).parent
 MAIN_MODULES = [
     "config.py", "main.py", "main_proxy.py", "linkedin_scraper.py",
     "linkedin_scraper_proxy.py", "proxy_manager.py", "utils.py", "resume_parser.py",
+    # v5.0 power stack
+    "cli.py", "search_filters.py", "enrichment.py", "scoring.py", "storage.py",
+    "exporters.py", "behavior.py", "mcp_server.py",
 ]
 
 

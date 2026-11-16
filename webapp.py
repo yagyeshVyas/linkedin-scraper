@@ -275,6 +275,12 @@ def build_status(root: Path = ROOT, manager: Optional[RunManager] = None,
     except Exception:
         payload["proxies"] = []
 
+    try:
+        from safety import read_summary
+        payload["safety"] = read_summary(str(root / "output" / "safety.json"))
+    except Exception:
+        payload["safety"] = {}
+
     payload["run"] = manager.snapshot(tail=0) if manager else {}
     payload["files"] = {
         "db": str(root / DEFAULT_DB),
@@ -363,6 +369,8 @@ def build_run_args(payload: Dict[str, Any]) -> List[str]:
         args += ["--formats", formats]
     if payload.get("headless"):
         args.append("--headless")
+    if payload.get("safe_mode") is False:
+        args.append("--unsafe")
     if payload.get("dry_run"):
         args.append("--dry-run")
     if payload.get("fresh"):

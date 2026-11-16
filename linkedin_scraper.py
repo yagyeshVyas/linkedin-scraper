@@ -17,6 +17,7 @@ from config import Config
 from fingerprint import (country_from_proxy, detect_country, generate_profile,
                          host_os, strip_proxy_tag, summary as fingerprint_summary)
 from proxy_intel import ProxyIntel
+from safety import SafetyGuard
 from enrichment import enrich_record
 from scoring import keyword_weights, read_resume_text, score_record
 from search_filters import (JobFilters, PeopleFilters, build_jobs_search_url,
@@ -185,6 +186,8 @@ class LinkedInScraper:
         )
         # Human pacing for typing/clicking/reading (level from config).
         self.humanizer = Humanizer(level=getattr(config, "HUMANIZE_LEVEL", 2))
+        # Account seatbelt: daily budgets, wall circuit-breaker, cooldowns.
+        self.safety = SafetyGuard.from_config(config)
         # Lazy ProxyManager for USE_FREE_PROXIES mode (auto-fetched free proxies).
         self.proxy_manager = None
         # Session-health telemetry. Persisted LIVE on every meaningful event
@@ -626,6 +629,8 @@ class LinkedInScraper:
     async def _handle_potential_block(self):
         """Increase delay multipliers and evaluate if identity rotation is needed."""
         self.consecutive_errors += 1
+        if self.safety.enabled:
+            self.safety.note_error()
         
         if self.consecutive_errors >= self.config.CONSECUTIVE_ERROR_LIMIT and self.config.ADAPTIVE_THROTTLE:
             logger.warning(f"⚠️  {self.consecutive_errors} consecutive errors. Increasing delays and rotating!")
@@ -766,6 +771,18 @@ class LinkedInScraper:
         caller should stop cleanly rather than retry).
         """
         reason = self._block_reason or "unknown"
+        if self.safety.enabled:
+            self.safety.note_wall(reason)
+            stop, why = self.safety.should_stop()
+            if stop:
+                logger.error(f"🛑 Safety stop during {context}: {why}")
+                self._stop_reason = f"safety: {why}"
+                self._telemetry_event("safety", why)
+                return False
+            remaining = self.safety.cooldown_remaining()
+            if remaining > 0 and self.safety.active:
+                logger.info(f"🧊 Cooldown {remaining:.0f}s after wall before rotating...")
+                await asyncio.sleep(min(remaining, 300))
         if self._block_recoveries >= self.config.MAX_BLOCK_RECOVERIES:
             logger.error(
                 f"🛑 Blocked again during {context} ({reason}) but the recovery "
@@ -2352,6 +2369,8 @@ class LinkedInScraper:
         self.telemetry["mode"] = mode
         self.telemetry["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._telemetry_event("run_start", f"dry-run · {mode} mode")
+        if self.safety.enabled:
+            self.safety.start_run()
 
         await self._launch_browser()
         try:
@@ -2376,6 +2395,7 @@ class LinkedInScraper:
             return True
         finally:
             await self._shutdown_browser()
+            self.safety.finish(self._stop_reason or "dry-run")
             self._finalize_telemetry(mode)
 
     # ─────────────────────────────────────────────
@@ -2445,6 +2465,8 @@ class LinkedInScraper:
         """
         self.daily_searches += 1
         self.telemetry["daily_searches"] = self.daily_searches
+        if self.safety.enabled:
+            self.safety.tick_search()
         if self.daily_searches >= self.config.MAX_DAILY_SEARCHES:
             logger.warning(f"🛑 Daily search limit reached ({self.daily_searches}).")
             self._telemetry_event("limit", "daily search cap reached")
@@ -2704,6 +2726,14 @@ class LinkedInScraper:
         logger.info(f"      Found {len(fresh)} new profiles to scrape...")
         scraped = 0
         for index, url in enumerate(fresh, 1):
+            if self.safety.enabled:
+                self.safety.tick_profile()
+                stop, why = self.safety.should_stop()
+                if stop:
+                    logger.error(f"🛑 Safety stop before profile {index}: {why}")
+                    self._stop_reason = f"safety: {why}"
+                    self._telemetry_event("safety", why)
+                    break
             if self._cap_reached():
                 logger.info(f"      Per-run profile cap reached "
                             f"({self.config.MAX_PROFILES_PER_RUN}) - stopping this search.")
@@ -2826,6 +2856,13 @@ class LinkedInScraper:
         self.scraped_urls = {r.get("linkedin_url") for r in self.results if r.get("linkedin_url")}
 
         # Cross-run state: SQLite store + JSONL event log + resume scoring.
+        if self.safety.enabled:
+            allowed, why = self.safety.can_start()
+            if not allowed:
+                logger.error(f"🛑 Safety stop before launch: {why}")
+                self._stop_reason = f"safety: {why}"
+                return None
+            self.safety.start_run()
         self._start_power_stack(mode)
         if self.store is not None:
             try:
@@ -2952,6 +2989,7 @@ class LinkedInScraper:
                 logger.info("\nNo results to export.")
 
             await self._shutdown_browser()
+            self.safety.finish(self._stop_reason)
 
             logger.info("\nFinal Summary:")
             logger.info(f"   Records saved   : {len(self.results)}")

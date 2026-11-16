@@ -331,6 +331,17 @@ class Config:
     # Run one audit after login and record the score in session telemetry.
     STEALTH_AUDIT_ON_LAUNCH: bool = True
 
+    # ─────────────────────────────────────────────
+    #  🛡️  ACCOUNT SAFETY (v7.3)
+    #  A seatbelt, not a guarantee: hard budgets and a wall circuit-breaker.
+    # ─────────────────────────────────────────────
+    SAFE_MODE: bool = True
+    SAFETY_MAX_WALLS_PER_DAY: int = 3
+    SAFETY_MAX_PROFILES_PER_DAY: int = 120
+    SAFETY_MAX_RUNTIME_MINUTES: int = 120
+    SAFETY_COOLDOWN_SECONDS: int = 90        # pause after a wall before rotating
+    SAFETY_LEDGER_FILE: str = "output/safety.json"
+
     
     # Deep Scraping Features
     SCRAPE_WORK_EXPERIENCE: bool = True

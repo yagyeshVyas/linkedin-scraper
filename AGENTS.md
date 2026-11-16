@@ -91,10 +91,11 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   boolean/number column (open_to_work, follower_count, connection_count) throws.
 - Behavioral tests: `test_scraper_fixes.py` (33 tests), `test_login_flow.py` (5 tests),
   `test_power_features.py` (58 tests), `test_cf_agent.py` (46 tests), `test_brutal.py`
-  (54 tests) and `test_webapp.py` (21 tests) — run each with `.venv/Scripts/python.exe <file>`
-  (no browser or network needed; the login suite drives the real `login()` against fakes, the
-  dashboard suite binds an ephemeral loopback port). No pytest in the venv — each file is a
-  plain script with a `__main__` runner list; add new tests to that list.
+  (54 tests), `test_webapp.py` (21 tests) and `test_safety.py` (14 tests) — run each with
+  `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite drives the
+  real `login()` against fakes, the dashboard suite binds an ephemeral loopback port). No
+  pytest in the venv — each file is a plain script with a `__main__` runner list; add new
+  tests to that list.
 
 ## Power stack (v5.0, 2026-11)
 
@@ -269,7 +270,27 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   `--max-candidate-pages` (mapped onto config; `JOB_TYPES`/`JOB_EASY_APPLY` added to
   config and passed by `_build_job_filters`).
 - `test_webapp.py` (21 tests) boots the real handler on an ephemeral loopback port, so it
-  covers HTTP without a browser. Run all SIX suites before claiming a change works.
+  covers HTTP without a browser. Run all SEVEN suites before claiming a change works.
+
+
+## Account safety (v7.3, 2026-11)
+
+- `safety.py` is the seatbelt: a persisted daily ledger (`output/safety.json`) plus
+  `SAFE_MODE = True` defaults — 3 walls/day, 120 profiles/day, 120 min/run, 90 s cooldown
+  after a wall. Risk is a 0-100 heuristic surfaced in `/api/status` as `safety` and on the
+  dashboard Overview (risk card + ledger panel).
+- `SafetyGuard.should_stop()` refuses to act unless `start_run()` was called (`active`
+  property). Tests construct scrapers and call recovery paths without starting a run — keep
+  that invariant or the suite starts blocking itself after a few fake walls.
+- Wiring: `run()` does `can_start()` before the power stack and `start_run()`, then
+  `finish()` in the `finally`; `dry_run()` starts/finishes too; `_recover_from_block()` notes
+  a wall, stops when the budget is spent, and sleeps the remaining cooldown before rotating;
+  `_scrape_profile_urls()` checks `should_stop()` before each profile and ticks the profile
+  counter; `_register_search()` ticks searches; `_handle_potential_block()` ticks errors.
+- `--unsafe` disables it for one CLI run. The dashboard Run panel's **safe mode** checkbox is
+  on by default and `webapp.build_run_args` emits `--unsafe` only when it is unchecked.
+- This is protection, not a guarantee. Do not describe it as making an account
+  un-bannable: it stops early, it does not control LinkedIn's decisions.
 
 
 ## Security

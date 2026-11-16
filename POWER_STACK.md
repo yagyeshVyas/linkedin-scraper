@@ -759,3 +759,43 @@ Tests: `test_webapp.py` (21) covers argument building, mode-specific facets, cla
 with an empty store, the UI contract, CLI wiring (`dashboard`, `main` default),
 loopback HTTP (`health`, `status`, index, records, proxy-scan) and the download
 traversal guard.
+
+---
+
+## 18. Account safety: the seatbelt (v7.3)
+
+`SAFE_MODE` is on by default. `safety.py` keeps a daily ledger
+(`output/safety.json`) and refuses to keep pushing a session that is producing
+hard walls.
+
+| Guard | Default | What happens |
+| --- | --- | --- |
+| wall budget | 3 / day | after the 3rd wall the run stops; the next run refuses to start until tomorrow |
+| profile budget | 120 / day | profiles loop stops cleanly, progress and exports are kept |
+| search budget | `MAX_DAILY_SEARCHES` | existing daily cap now also feeds the safety check |
+| runtime budget | 120 min / run | long sessions stop instead of drifting into detection |
+| wall cooldown | 90 s | after a wall, the recovery path waits before rotating |
+
+Risk is a 0-100 heuristic (walls 62%, volume 26%, errors 12%) shown on the
+Overview card and in `/api/status` as `safety`. When a guard fires, the run ends
+with `_stop_reason = "safety: …"`, saves progress, exports what it has, and the
+ledger records why.
+
+```python
+SAFE_MODE = True
+SAFETY_MAX_WALLS_PER_DAY = 3
+SAFETY_MAX_PROFILES_PER_DAY = 120
+SAFETY_MAX_RUNTIME_MINUTES = 120
+SAFETY_COOLDOWN_SECONDS = 90
+SAFETY_LEDGER_FILE = "output/safety.json"
+```
+
+Dashboard: the Run panel has a **safe mode** checkbox (on by default) and the
+Overview has the risk card plus a safety ledger panel. CLI:
+`python cli.py run --unsafe` disables it for one run (not recommended), and the
+Dashboard passes `--unsafe` only when the checkbox is off.
+
+This is protection, not a guarantee: LinkedIn decides what it considers
+automation, and no client-side setting can promise an account will never be
+restricted. The guard's job is to stop early enough that a warning does not
+become a ban.

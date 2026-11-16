@@ -226,6 +226,7 @@ linkedin-scraper/
 ├── fingerprint.py             ← coherent fingerprint generator + validator + init script
 ├── stealth_audit.py           ← live anti-detection probe and 0-100 score
 ├── proxy_intel.py             ← per-proxy health, cooldown, latency, country scoreboard
+├── safety.py                  ← account ledger, budgets, wall circuit-breaker, risk
 ├── agent_browser.py           ← Agent-native browser (a11y refs) + MCP server
 ├── mcp_server.py              ← Dependency-free MCP server (stdio) over the database
 ├── webapp.py                  ← Local dashboard backend (stdlib HTTP + JSON API)
@@ -242,6 +243,7 @@ linkedin-scraper/
 ├── test_cf_agent.py           ← 46 tests for the v6.0 stealth + agent browser
 ├── test_brutal.py             ← 54 tests for the armor (fingerprints, proxies, audit)
 ├── test_webapp.py             ← 21 tests for the dashboard API and page
+├── test_safety.py             ← 14 tests for the account-safety governor
 ├── start.bat                  ← one-click: bootstrap + open the dashboard
 │
 ├── output/                    ← Auto-created on first run

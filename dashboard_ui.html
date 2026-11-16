@@ -59,7 +59,7 @@
   .view.on{display:block}
   @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
   .grid{display:grid;gap:14px}
-  .cards{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(165px,1fr))}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
         padding:16px 18px;box-shadow:var(--shadow);backdrop-filter:blur(8px)}
   .card .k{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
@@ -237,6 +237,7 @@
           <div class="card"><div class="k">With email</div><div class="v" id="statEmail">0</div></div>
           <div class="card"><div class="k">Runs</div><div class="v" id="statRuns">0</div></div>
           <div class="card"><div class="k">Stealth score</div><div class="v" id="statStealth">—<small id="statStealthGrade"></small></div></div>
+          <div class="card"><div class="k">Account risk</div><div class="v" id="statRisk">—<small id="statRiskGrade"></small></div></div>
         </div>
 
         <h2>Search modes</h2>
@@ -270,6 +271,8 @@
             <div class="card" id="sessionCard"><div class="empty">no session telemetry yet</div></div>
             <h2>Engine</h2>
             <div class="card" id="engineCard"><div class="empty">loading…</div></div>
+            <h2>Account safety</h2>
+            <div class="card" id="safetyCard"><div class="empty">no safety ledger yet</div></div>
             <h2>Quick actions</h2>
             <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
               <button class="btn small" onclick="go('run')">Start a run</button>
@@ -384,6 +387,7 @@
                 <div class="field"><label>2FA wait (s)</label><input id="fChallenge" type="number" min="0" placeholder="0 = config"></div>
                 <div class="field full"><label>Formats</label><input id="fFormats" value="xlsx,csv,json,md,html"></div>
                 <div class="checks full">
+                  <label class="check"><input type="checkbox" id="fSafe" checked> safe mode</label>
                   <label class="check"><input type="checkbox" id="fHeadless"> headless</label>
                   <label class="check"><input type="checkbox" id="fDry"> dry run</label>
                   <label class="check"><input type="checkbox" id="fFresh"> ignore completed</label>
@@ -565,6 +569,13 @@ function renderOverview(data){
   $("statStealth").innerHTML = (score === undefined || score === null ? "—" : score) +
     (telemetry.stealth_grade ? `<small>${esc(telemetry.stealth_grade)}</small>` : "");
 
+  const safety = data.safety || {};
+  if (safety.risk !== undefined){
+    $("statRisk").innerHTML = `${esc(safety.risk)}<small>${esc(safety.grade || "")}</small>`;
+  } else {
+    $("statRisk").innerHTML = "—<small>no ledger</small>";
+  }
+
   const runsBody = $("runsTable").querySelector("tbody");
   const runs = data.runs || [];
   runsBody.innerHTML = runs.length ? runs.map(r => `
@@ -601,6 +612,21 @@ function renderOverview(data){
       <dt>curl_cffi</dt><dd>${engines.curl_cffi ? '<span class="good">yes</span>' : '<span class="warn">no</span>'}</dd>
       <dt>flaresolverr</dt><dd>${engines.flaresolverr_configured ? "configured" : "off"}</dd>
     </dl>`;
+
+  const safetyCard = $("safetyCard");
+  if (safetyCard){
+    if (safety && safety.enabled !== undefined){
+      safetyCard.innerHTML = `<dl class="kv">
+        <dt>risk</dt><dd><span class="tag ${safety.risk < 25 ? "good" : safety.risk < 55 ? "warn" : "bad"}">${esc(safety.risk)} · ${esc(safety.grade)}</span></dd>
+        <dt>walls</dt><dd>${esc(safety.walls)} / ${esc(safety.max_walls)}</dd>
+        <dt>profiles</dt><dd>${esc(safety.profiles)} / ${esc(safety.max_profiles)}</dd>
+        <dt>searches</dt><dd>${esc(safety.searches)}${safety.max_searches ? " / " + esc(safety.max_searches) : ""}</dd>
+        <dt>last stop</dt><dd>${esc(safety.last_stop_reason || "—")}</dd>
+      </dl>`;
+    } else {
+      safetyCard.innerHTML = '<div class="empty">no safety ledger yet</div>';
+    }
+  }
 
   if (data.run) renderRun(data.run);
 }
@@ -680,6 +706,7 @@ function runPayload(){
     formats:$("fFormats").value, headless:$("fHeadless").checked,
     dry_run:$("fDry").checked, fresh:$("fFresh").checked,
     no_db:$("fNoDb").checked, challenge_timeout:$("fChallenge").value,
+    safe_mode:$("fSafe").checked,
   };
   if (state.mode === "people"){
     Object.assign(payload, {

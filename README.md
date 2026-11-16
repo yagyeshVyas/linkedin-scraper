@@ -240,8 +240,9 @@ linkedin-scraper/
 ├── test_login_flow.py         ← Drives the real login() against fakes
 ├── test_power_features.py     ← 58 tests for the v5.0 stack (no browser needed)
 ├── test_cf_agent.py           ← 46 tests for the v6.0 stealth + agent browser
-├── test_brutal.py             ← 53 tests for the v7.0 armor (fingerprints, proxies, audit)
-├── test_webapp.py             ← 18 tests for the dashboard API and page
+├── test_brutal.py             ← 54 tests for the armor (fingerprints, proxies, audit)
+├── test_webapp.py             ← 20 tests for the dashboard API and page
+├── start.bat                  ← one-click: bootstrap + open the dashboard
 │
 ├── output/                    ← Auto-created on first run
 │   ├── linkedin_results.xlsx  ← Your exported Excel data
@@ -434,9 +435,26 @@ error streaks, daily search count, ban-risk score). No setup needed.
 
 ## ▶️ How to Run
 
-### Option A — Without Proxy (direct connection)
+### Option 0 — Just run it (dashboard opens itself)
+
+Double-click **`start.bat`** (it bootstraps `.venv`, dependencies and browsers on
+first run), or:
+
 ```bash
 python main.py
+```
+
+The control room opens at `http://127.0.0.1:8765` automatically. `--port 9000`
+moves it, `--no-open` starts it headless, and `--menu` keeps the classic
+terminal menu:
+
+```bash
+python main.py --menu
+```
+
+### Option A — Without Proxy (direct connection)
+```bash
+python main.py --menu
 ```
 
 ### Option B — With Free Auto-Rotating Proxies ✨

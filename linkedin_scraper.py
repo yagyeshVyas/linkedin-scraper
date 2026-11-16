@@ -154,6 +154,10 @@ class LinkedInScraper:
         # Why the last _check_page_block_status() call called it blocked
         # ("authwall" / "rate_limit" / "captcha" / "checkpoint").
         self._block_reason = ""
+        # Set when a profile scrape failed because the browser window died —
+        # the profile loop relaunches and retries that URL instead of counting
+        # a whole page of failures.
+        self._browser_closed = False
         # How many profiles came back empty for each tracked field — surfaced in
         # the final summary as an early warning for LinkedIn selector changes.
         self.section_misses = {}
@@ -1089,6 +1093,44 @@ class LinkedInScraper:
     #  SEARCH — JOBS (NEW)
     # ─────────────────────────────────────────────
 
+    async def _goto_page(self, url: str, *, wait_until: str = "domcontentloaded",
+                         timeout: Optional[int] = None, retries: int = 2):
+        """Navigate with one retry for LinkedIn's ERR_ABORTED SPA race.
+
+        LinkedIn aborts the initial document navigation when its client router
+        takes over, which surfaces as ``net::ERR_ABORTED`` on an otherwise
+        healthy page. Retrying once is enough; anything else propagates.
+        """
+        budget = int(timeout or self.config.REQUEST_TIMEOUT_MS)
+        last = None
+        for attempt in range(max(1, int(retries))):
+            try:
+                return await self.page.goto(url, wait_until=wait_until, timeout=budget)
+            except Exception as exc:
+                last = exc
+                if "ERR_ABORTED" in str(exc) and attempt + 1 < retries:
+                    await asyncio.sleep(random.uniform(0.8, 2.0))
+                    continue
+                raise
+        raise last
+
+    async def _goto_search(self, url: str):
+        """Search pages: commit fast, then wait for the results container.
+
+        ``domcontentloaded`` is the wrong signal here — the SPA can abort it.
+        ``commit`` returns on the response, then the caller's normal human
+        delay plus this container wait gives the cards time to render.
+        """
+        await self._goto_page(url, wait_until="commit", retries=3)
+        for selector in ("div.search-results-container",
+                         ".search-results-container", "main"):
+            try:
+                await self.page.wait_for_selector(selector, timeout=12000,
+                                                  state="attached")
+                return
+            except Exception:
+                continue
+
     async def search_jobs(self, keyword: str) -> list:
         """
         Search LinkedIn for job listings by keyword.
@@ -1115,7 +1157,7 @@ class LinkedInScraper:
                 page_filters = self._build_job_filters(
                     keyword, start=base_filters.page_start(page_num, per_page=25))
                 url = build_jobs_search_url(page_filters)
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.REQUEST_TIMEOUT_MS)
+                await self._goto_search(url)
                 await human_delay(3, 6)
                 
                 if await self._check_page_block_status():
@@ -1270,7 +1312,7 @@ class LinkedInScraper:
                 page_filters.page = page_num
                 url = build_people_search_url(page_filters)
 
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.REQUEST_TIMEOUT_MS)
+                await self._goto_search(url)
                 await human_delay(3, 6)
                 
                 if await self._check_page_block_status():
@@ -1347,7 +1389,7 @@ class LinkedInScraper:
                 page_filters = self._build_people_filters(job_title, company)
                 page_filters.page = page_num
                 url = build_people_search_url(page_filters)
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.REQUEST_TIMEOUT_MS)
+                await self._goto_search(url)
                 await human_delay(3, 6)
                 
                 if await self._check_page_block_status():
@@ -1415,7 +1457,8 @@ class LinkedInScraper:
     async def scrape_profile(self, profile_url: str, search_company: str, job_title: str) -> Optional[dict]:
         """Scrape a single LinkedIn profile. Returns dict or None."""
         try:
-            await self.page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+            await self._goto_page(profile_url, wait_until="domcontentloaded",
+                                  timeout=30000, retries=2)
             await human_delay(3, 7)
             await self._maybe_humanize()
             await random_scroll(self.page, scrolls=3)
@@ -1512,6 +1555,8 @@ class LinkedInScraper:
 
         except Exception as e:
             logger.error(f"   ❌ Failed: {profile_url} — {e}")
+            if self._is_browser_closed(e):
+                self._browser_closed = True
             # Keep enough context to retry this profile once at the end of the run.
             self.failed_urls.append({
                 "url": profile_url,
@@ -1519,6 +1564,34 @@ class LinkedInScraper:
                 "title": job_title,
             })
             return None
+
+    _CLOSED_MARKERS = (
+        "target page, context or browser has been closed",
+        "targetclosederror",
+        "browser has been closed",
+        "page has been closed",
+    )
+
+    def _is_browser_closed(self, exc) -> bool:
+        text = str(exc or "").lower()
+        return any(marker in text for marker in self._CLOSED_MARKERS)
+
+    async def _recover_closed_browser(self) -> bool:
+        """Relaunch + re-login after the browser window dies mid-run."""
+        logger.warning("🔄 Browser window closed mid-run — relaunching identity...")
+        self._telemetry_event("recover", "browser closed")
+        await self._shutdown_browser()
+        try:
+            await self._launch_browser()
+            if not await self.login():
+                logger.error("❌ Re-login after browser crash failed.")
+                return False
+        except Exception as exc:
+            logger.error(f"❌ Browser relaunch failed ({exc.__class__.__name__}: {exc}).")
+            return False
+        self._block_reason = ""
+        self.consecutive_errors = 0
+        return True
 
     def _passes_filter(self, profile: dict) -> bool:
         """
@@ -2638,6 +2711,16 @@ class LinkedInScraper:
             logger.info(f"      [{index}/{len(fresh)}] Scraping...")
             profile = await self.scrape_profile(url, search_company=search_company,
                                                 job_title=job_title)
+            if profile is None and self._browser_closed:
+                self._browser_closed = False
+                if await self._recover_closed_browser():
+                    logger.info(f"      ↪ Retrying {url} on the fresh browser...")
+                    profile = await self.scrape_profile(url, search_company=search_company,
+                                                        job_title=job_title)
+                else:
+                    logger.error("❌ Could not recover the browser — stopping this search.")
+                    self._stop_reason = "browser closed"
+                    break
             if profile:
                 if skill:
                     profile["search_skill"] = skill

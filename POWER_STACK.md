@@ -710,6 +710,12 @@ STEALTH_AUDIT_ON_LAUNCH = True     # one audit after login -> telemetry
 
 ## 17. Dashboard: one page for everything (v7.2)
 
+**It opens itself.** `python main.py` — or double-clicking `start.bat` — starts the
+dashboard and opens the browser. `--menu` keeps the classic terminal flow,
+`--port 9000` moves it, `--no-open` starts it quietly. `start.bat` also bootstraps
+a missing `.venv`, installs `Requirements.txt` and both Chromium builds on a
+fresh machine.
+
 ```bash
 python cli.py dashboard --open
 # http://127.0.0.1:8765
@@ -749,6 +755,7 @@ JSON endpoints: `status`, `records`, `record?id=`, `runs`, `proxies`,
 `run/status`, `run`, `run/stop`, `stealth`, `proxy-scan`, `export`,
 `download?path=`, `health`.
 
-Tests: `test_webapp.py` (18) covers argument building, clamping, status shape
-with an empty store, the UI contract, CLI wiring, loopback HTTP (`health`,
-`status`, index, records) and the download traversal guard.
+Tests: `test_webapp.py` (20) covers argument building, clamping, status shape
+with an empty store, the UI contract, CLI wiring (`dashboard`, `main` default),
+loopback HTTP (`health`, `status`, index, records, proxy-scan) and the download
+traversal guard.

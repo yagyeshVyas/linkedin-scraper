@@ -91,7 +91,7 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   boolean/number column (open_to_work, follower_count, connection_count) throws.
 - Behavioral tests: `test_scraper_fixes.py` (33 tests), `test_login_flow.py` (5 tests),
   `test_power_features.py` (58 tests), `test_cf_agent.py` (46 tests), `test_brutal.py`
-  (53 tests) and `test_webapp.py` (18 tests) — run each with `.venv/Scripts/python.exe <file>`
+  (54 tests) and `test_webapp.py` (20 tests) — run each with `.venv/Scripts/python.exe <file>`
   (no browser or network needed; the login suite drives the real `login()` against fakes, the
   dashboard suite binds an ephemeral loopback port). No pytest in the venv — each file is a
   plain script with a `__main__` runner list; add new tests to that list.
@@ -116,7 +116,10 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 - `_scrape_profile_urls()` is the single profile loop for people and candidates mode. It
   dedupes through `_already_seen()` (in-memory + SQLite `record_exists`), persists each
   profile with `_remember_profile()`, and enforces `MAX_PROFILES_PER_RUN` via `_cap_reached()`.
-  Add per-profile behaviour there, not in the three mode loops.
+  Add per-profile behaviour there, not in the three mode loops. When a profile scrape fails
+  with a closed browser (`_is_browser_closed`), the loop calls `_recover_closed_browser()`
+  (teardown → relaunch → re-login) and retries that one URL before giving up — a closed window
+  must not turn a page into eight failures.
 - Faceted search invariant: LinkedIn silently ignores plain-text `location`/`currentCompany`
   on people search. `PeopleFilters.validate()` therefore rejects non-numeric company/school/
   industry ids and unknown place names and records warnings; `_log_search_warnings` prints
@@ -230,7 +233,7 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   `_rotate_identity`; do not scatter proxy bookkeeping into the search loops.
 - `Humanizer` takes injectable `rng`/`sleep` — tests run instantly. `level=0` multiplies all
   delays by zero; keep that property (the whole test suite relies on it).
-- `test_brutal.py` (53 tests) is the fifth suite: 300 generated profiles validated, planted
+- `test_brutal.py` (54 tests) is the fifth suite: 300 generated profiles validated, planted
   incoherence caught, proxy pick/cooldown/persistence, audit scoring, Humanizer typing/typos,
   eight new MCP tools, tagged-proxy scraper wiring. Run all FIVE suites.
 - Runtime artifacts now ignored: `output/proxy_intel.json`, `output/_intel_brutal.json`,
@@ -240,9 +243,10 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 ## Dashboard (v7.2, 2026-11)
 
 - `webapp.py` (stdlib `ThreadingHTTPServer`) + `dashboard_ui.html` (one file, no build, no
-  framework) are the local control room: `python cli.py dashboard --open`. Default port
-  **8765** — 8787 is taken/excluded on this machine (WinError 10013/10048). Bound to
-  127.0.0.1 only.
+  framework) are the local control room. `python main.py` starts it and opens the browser by
+  default (`--menu` restores the classic terminal flow, `--port` / `--no-open` tune it);
+  `start.bat` bootstraps venv + deps + browsers and calls `main.py`. Default port **8765** —
+  8787 is taken/excluded on this machine (WinError 10013/10048). Bound to 127.0.0.1 only.
 - `RunManager` owns exactly ONE `cli.py run` subprocess; a second start raises and the API
   returns 409. stdout streams to `output/dashboard_run.log` plus a 5,000-line ring. Stop on
   Windows is `taskkill /PID <pid> /T /F` scoped to that run's own tree — never an image-name
@@ -256,7 +260,7 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   `#view-<name>`, and these ids exist: `recordsTable`, `runsTable`, `recentTable`,
   `btnAudit`, `btnProxy`, `gauge`, `console`, `fullLog`. JS polls status every 3.2s and the
   log every 1.6s while a run is active.
-- `test_webapp.py` (18 tests) boots the real handler on an ephemeral loopback port, so it
+- `test_webapp.py` (20 tests) boots the real handler on an ephemeral loopback port, so it
   covers HTTP without a browser. Run all SIX suites before claiming a change works.
 
 

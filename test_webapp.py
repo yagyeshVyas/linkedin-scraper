@@ -122,6 +122,16 @@ def test_cli_exposes_dashboard_command():
     assert args.command == "dashboard" and args.port == 9123 and args.open
 
 
+def test_main_defaults_to_dashboard_menu_is_optin():
+    """Running the project with no arguments must open the dashboard."""
+    import main
+    parser = main.build_parser()
+    default = parser.parse_args([])
+    assert default.menu is False, "dashboard is the default entry now"
+    args = parser.parse_args(["--menu", "--port", "9123", "--no-open"])
+    assert args.menu is True and args.port == 9123 and args.no_open is True
+
+
 def _with_server(fn):
     server = webapp.DashboardServer(("127.0.0.1", 0), webapp.Handler, root=Path.cwd())
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -180,6 +190,19 @@ def test_http_records_endpoint():
     _with_server(check)
 
 
+def test_http_proxy_scan_counts_as_a_scan_even_with_no_healthy_proxy():
+    def check(port):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/proxy-scan",
+            data=json.dumps({"proxies": "http://127.0.0.1:9"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        body = json.loads(urllib.request.urlopen(request, timeout=90).read())
+        assert body["ok"] is True, "a completed scan must not read as an API failure"
+        assert isinstance(body["result"].get("results"), list)
+
+    _with_server(check)
+
+
 def test_export_empty_store_errors():
     with tempfile.TemporaryDirectory() as tmp:
         db = str(Path(tmp) / "empty.db")
@@ -206,10 +229,12 @@ def main():
         test_ui_file_has_the_doors,
         test_run_cli_json_tolerates_non_json_output,
         test_cli_exposes_dashboard_command,
+        test_main_defaults_to_dashboard_menu_is_optin,
         test_http_health_and_status,
         test_http_index_serves_the_ui,
         test_http_download_rejects_traversal,
         test_http_records_endpoint,
+        test_http_proxy_scan_counts_as_a_scan_even_with_no_healthy_proxy,
         test_export_empty_store_errors,
     ]
     failed = 0

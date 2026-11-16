@@ -539,7 +539,10 @@ class Handler(BaseHTTPRequestHandler):
                 if proxies:
                     args += ["--proxies", proxies[:1000]]
                 result = run_cli_json(args, self.root, timeout=300)
-                self._json({"ok": bool(result.get("ok", False)), "result": result})
+                # A scan that ran but found zero healthy proxies is still a
+                # completed scan, not an API failure — the table shows the truth.
+                ran = isinstance(result.get("results"), list)
+                self._json({"ok": bool(ran or result.get("ok", False)), "result": result})
                 return
             if path == "/api/export":
                 self._json(export_records(payload, self.root))

@@ -38,6 +38,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode", choices=["people", "jobs", "candidates"], default=None,
         help="search mode (default: config.SEARCH_MODE); useful with --dry-run",
     )
+    parser.add_argument(
+        "--menu", action="store_true",
+        help="classic interactive terminal menu instead of the dashboard",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8765,
+        help="dashboard port (default 8765; tries the next few if busy)",
+    )
+    parser.add_argument(
+        "--no-open", action="store_true",
+        help="start the dashboard without opening a browser window",
+    )
     return parser
 
 
@@ -80,6 +92,22 @@ async def main():
         scraper = LinkedInScraper(config)
         ok = await scraper.dry_run(target_list)
         sys.exit(0 if ok else 1)
+
+    # ── Default: open the control room. `--menu` keeps the old terminal flow ──
+    if not args.menu:
+        from webapp import main as dashboard_main
+
+        print("[dashboard] starting the control room — Ctrl+C to stop")
+        for port in range(int(args.port), int(args.port) + 5):
+            argv = ["--port", str(port)]
+            if not args.no_open:
+                argv.append("--open")
+            code = dashboard_main(argv)
+            if code == 0:
+                return
+            print(f"[dashboard] port {port} unavailable, trying {port + 1}…")
+        print("[dashboard] could not start the dashboard on any nearby port", file=sys.stderr)
+        sys.exit(1)
 
     if config.LINKEDIN_EMAIL == "your_email@gmail.com":
         console.print("[bold red]❌ ERROR: Please set your LinkedIn credentials in config.py[/]")

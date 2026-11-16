@@ -672,6 +672,35 @@ def test_scraper_launch_audit_records_score():
     assert scraper.telemetry["stealth_grade"] == "A"
 
 
+def test_browser_closed_detection_and_recovery():
+    from config import Config
+    from linkedin_scraper import LinkedInScraper
+
+    scraper = LinkedInScraper(Config())
+    assert scraper._is_browser_closed(RuntimeError(
+        "Target page, context or browser has been closed"))
+    assert scraper._is_browser_closed(RuntimeError("TargetClosedError: page crashed"))
+    assert not scraper._is_browser_closed(RuntimeError("Timeout 30000ms exceeded"))
+
+    calls = []
+
+    async def shutdown():
+        calls.append("shutdown")
+
+    async def launch():
+        calls.append("launch")
+
+    async def login():
+        calls.append("login")
+        return True
+
+    scraper._shutdown_browser = shutdown
+    scraper._launch_browser = launch
+    scraper.login = login
+    assert asyncio.run(scraper._recover_closed_browser()) is True
+    assert calls == ["shutdown", "launch", "login"]
+
+
 # ─────────────────────────────────────────────────────────────
 #  CLI
 # ─────────────────────────────────────────────────────────────
@@ -749,6 +778,7 @@ def main():
         test_config_exposes_armor_flags,
         test_scraper_script_patches_platform_and_ua_ch,
         test_scraper_launch_audit_records_score,
+        test_browser_closed_detection_and_recovery,
         test_cli_parsers_for_new_commands,
         test_doctor_reports_armor_checks,
     ]

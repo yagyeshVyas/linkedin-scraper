@@ -160,6 +160,12 @@ def build_parser() -> argparse.ArgumentParser:
     proxy_scan.add_argument("--reset", action="store_true", help="clear cooldowns first")
     proxy_scan.add_argument("--json", action="store_true")
 
+    dashboard = sub.add_parser("dashboard", help="local one-page control room (web UI)")
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument("--open", action="store_true", help="open it in the browser")
+    dashboard.add_argument("--db", default="")
+
     doctor = sub.add_parser("doctor", help="check environment, credentials and data")
     doctor.add_argument("--json", action="store_true")
 
@@ -618,6 +624,19 @@ def cmd_proxy_scan(args) -> int:
     return 0 if any(row["ok"] for row in rows) else 1
 
 
+def cmd_dashboard(args) -> int:
+    """Start the local one-page control room."""
+    from webapp import main as dashboard_main
+
+    argv = ["--host", args.host, "--port", str(args.port)]
+    if getattr(args, "open", False):
+        argv.append("--open")
+    if getattr(args, "db", ""):
+        argv += ["--db", args.db]
+    return dashboard_main(argv)
+
+
+
 def cmd_db(args) -> int:
     from storage import Store
 
@@ -882,6 +901,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "fetch": cmd_fetch,
         "stealth-check": cmd_stealth_check,
         "proxy-scan": cmd_proxy_scan,
+        "dashboard": cmd_dashboard,
         "doctor": cmd_doctor,
         "db": cmd_db,
     }

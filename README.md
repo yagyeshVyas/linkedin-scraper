@@ -170,6 +170,33 @@ ready.
 
 ---
 
+## 🖥️ Dashboard — one page, every door
+
+A local control room that runs and shows everything without touching a
+terminal again:
+
+```bash
+python cli.py dashboard --open
+```
+
+It serves `http://127.0.0.1:8765` (local only, no auth, no network exposure) and
+is one HTML file with no build step. Five tabs:
+
+| Tab | What it does |
+| --- | --- |
+| **Overview** | live cards (profiles, emails, runs, stealth score), recent runs, latest profiles, session telemetry, engine status |
+| **Run** | start/stop a scrape with mode, companies, titles, limit, formats, headless/dry-run, then watch the log stream live |
+| **Records** | search the stored pool, open any profile in a side sheet with every field |
+| **Armor** | run the stealth audit with a 0-100 gauge and pass/fail findings; scan and rank the proxy pool |
+| **Logs** | the full run trail, downloadable |
+
+The backend is `http.server` + JSON (`webapp.py`): `status`, `records`,
+`record`, `runs`, `proxies`, `run/status`, `run`, `run/stop`, `stealth`,
+`proxy-scan`, `export`, `download`. One run at a time; stopping kills only that
+run's own process tree.
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -201,9 +228,11 @@ linkedin-scraper/
 ├── proxy_intel.py             ← per-proxy health, cooldown, latency, country scoreboard
 ├── agent_browser.py           ← Agent-native browser (a11y refs) + MCP server
 ├── mcp_server.py              ← Dependency-free MCP server (stdio) over the database
-├── POWER_STACK.md             ← Full guide to the v5.0 features
+├── webapp.py                  ← Local dashboard backend (stdlib HTTP + JSON API)
+├── dashboard_ui.html          ← One-page dashboard UI (no build step)
+├── POWER_STACK.md             ← Full guide to the power stack
 │
-├── dashboard_template.html    ← Dashboard UI source of truth
+├── dashboard_template.html    ← Static report UI template (generated dashboard.html)
 ├── generate_dashboard.py      ← Builds dashboard.html from output/ (stdlib only)
 ├── dashboard.html             ← Generated live dashboard (open in a browser)
 │
@@ -212,6 +241,7 @@ linkedin-scraper/
 ├── test_power_features.py     ← 58 tests for the v5.0 stack (no browser needed)
 ├── test_cf_agent.py           ← 46 tests for the v6.0 stealth + agent browser
 ├── test_brutal.py             ← 53 tests for the v7.0 armor (fingerprints, proxies, audit)
+├── test_webapp.py             ← 18 tests for the dashboard API and page
 │
 ├── output/                    ← Auto-created on first run
 │   ├── linkedin_results.xlsx  ← Your exported Excel data

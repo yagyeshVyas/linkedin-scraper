@@ -1055,9 +1055,12 @@ async def _launch_camoufox(headless: bool, proxy: Optional[dict], launch_args: L
 def capability_report() -> dict:
     """What this machine can actually do, for ``cli.py doctor``."""
     engines = available_engines()
+    # Both front doors prefer the scriptable engine when armor is on; report the
+    # engine they would actually launch, not the raw list order.
+    best = "playwright" if "playwright" in engines else (engines[0] if engines else "")
     return {
         "engines": engines,
-        "best_engine": engines[0] if engines else "",
+        "best_engine": best,
         "curl_cffi": _module_available("curl_cffi"),
         "camoufox": _module_available("camoufox"),
         "patchright": _module_available("patchright"),

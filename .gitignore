@@ -6,4 +6,7 @@ output/agent_screenshots/
 output/agent_downloads/
 output/proxy_intel.json
 output/_intel_brutal.json
+output/dashboard_run.log
+output/dashboard*.png
 session/agent_browser/
+session/_dash/

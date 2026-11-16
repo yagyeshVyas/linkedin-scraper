@@ -705,3 +705,50 @@ HUMANIZE_LEVEL = 2                 # 0 off .. 3 slow
 STEALTH_AUDIT_MIN_SCORE = 70       # stealth-check exits 1 below this
 STEALTH_AUDIT_ON_LAUNCH = True     # one audit after login -> telemetry
 ```
+
+---
+
+## 17. Dashboard: one page for everything (v7.2)
+
+```bash
+python cli.py dashboard --open
+# http://127.0.0.1:8765
+```
+
+`webapp.py` is a stdlib-only HTTP server (`ThreadingHTTPServer`), bound to
+loopback. `dashboard_ui.html` is the whole frontend: HTML, CSS and JS in one
+file, no build step, no CDN, no framework.
+
+Five views:
+
+| View | Contents |
+| --- | --- |
+| Overview | records / email coverage / runs / stealth score cards, recent runs, latest profiles, session telemetry, engine report, quick actions |
+| Run | full run form (mode, companies, titles, keywords, skills, location, limits, formats, headless, dry-run, fresh, no-db, 2FA wait), start/stop, live log console |
+| Records | debounced search across the store, row click opens a side sheet with every field |
+| Armor | stealth audit with gauge + findings; proxy scan with score/block/latency/cooldown table |
+| Logs | full run log, downloadable |
+
+Backend behaviour that matters:
+
+* **One run at a time.** `RunManager` owns a single `cli.py run` subprocess,
+  streams stdout to `output/dashboard_run.log` and a 5,000-line ring, and
+  refuses a second start (HTTP 409).
+* **Stop is scoped.** Windows uses `taskkill /PID <pid> /T /F` on that run's own
+  tree only — never an image-name kill; POSIX terminates the process.
+* **Status is cheap.** `/api/status` caches the database section for 4s and
+  always refreshes the live run snapshot.
+* **Actions are the real CLI.** `stealth-check --json` and `proxy-scan --json`
+  run as subprocesses, so the dashboard cannot drift from the command line.
+* **Downloads are confined.** `/api/download` resolves the target and rejects
+  anything outside the repo, plus non-report file types.
+* **Empty states are real errors.** Export with no records returns a clear 500
+  message instead of writing an empty workbook.
+
+JSON endpoints: `status`, `records`, `record?id=`, `runs`, `proxies`,
+`run/status`, `run`, `run/stop`, `stealth`, `proxy-scan`, `export`,
+`download?path=`, `health`.
+
+Tests: `test_webapp.py` (18) covers argument building, clamping, status shape
+with an empty store, the UI contract, CLI wiring, loopback HTTP (`health`,
+`status`, index, records) and the download traversal guard.

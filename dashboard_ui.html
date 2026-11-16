@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rack · LinkedIn control</title>
+<style>
+  :root{
+    --bg:#0b0d12; --bg2:#11141c; --panel:rgba(22,26,36,.78); --line:rgba(255,255,255,.07);
+    --text:#e8ecf4; --muted:#8b93a7; --dim:#5b6478;
+    --accent:#6ee7d8; --accent2:#8b7bff; --good:#4ade80; --warn:#fbbf24; --bad:#f87171;
+    --radius:16px; --shadow:0 18px 50px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:
+      radial-gradient(1200px 800px at 85% -10%, rgba(139,123,255,.16), transparent 60%),
+      radial-gradient(900px 700px at 0% 110%, rgba(110,231,216,.10), transparent 55%),
+      var(--bg);
+    color:var(--text); font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  button,input,select,textarea{font:inherit;color:inherit}
+  .app{display:flex;height:100vh}
+  /* ── sidebar ── */
+  .side{width:212px;flex:0 0 212px;padding:22px 16px;border-right:1px solid var(--line);
+        background:linear-gradient(180deg,rgba(17,20,28,.85),rgba(11,13,18,.55));display:flex;flex-direction:column;gap:26px}
+  .brand{display:flex;align-items:center;gap:10px;padding:0 6px}
+  .mark{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+        box-shadow:0 0 22px rgba(110,231,216,.35);position:relative}
+  .mark::after{content:"";position:absolute;inset:9px;border-radius:4px;background:rgba(10,12,18,.82)}
+  .brand b{font-size:15px;letter-spacing:.12em}
+  .brand span{display:block;font-size:10.5px;color:var(--dim);letter-spacing:.16em;text-transform:uppercase}
+  .nav{display:flex;flex-direction:column;gap:4px}
+  .nav button{
+    all:unset;display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:11px;
+    cursor:pointer;color:var(--muted);transition:background .18s ease,color .18s ease,transform .18s ease;
+  }
+  .nav button .ico{width:18px;text-align:center;opacity:.8}
+  .nav button:hover{background:rgba(255,255,255,.045);color:var(--text)}
+  .nav button.on{background:rgba(110,231,216,.10);color:var(--text);box-shadow:inset 0 0 0 1px rgba(110,231,216,.18)}
+  .nav button.on .ico{opacity:1}
+  .side-foot{margin-top:auto;padding:0 8px;color:var(--dim);font-size:11px;line-height:1.7}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--dim);margin-right:7px;vertical-align:middle}
+  .dot.live{background:var(--good);box-shadow:0 0 10px rgba(74,222,128,.7)}
+  /* ── main ── */
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .top{display:flex;align-items:center;gap:14px;padding:18px 26px;border-bottom:1px solid var(--line);
+       background:rgba(11,13,18,.45);backdrop-filter:blur(10px)}
+  .top h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.02em}
+  .top .sub{font-size:12px;color:var(--muted)}
+  .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 13px;border-radius:999px;
+        border:1px solid var(--line);background:rgba(255,255,255,.03);font-size:12px;color:var(--muted)}
+  .pill b{color:var(--text);font-weight:600}
+  .content{flex:1;overflow:auto;padding:24px 26px 60px;scroll-behavior:smooth}
+  .view{display:none;animation:fade .28s ease}
+  .view.on{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .grid{display:grid;gap:14px}
+  .cards{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:16px 18px;box-shadow:var(--shadow);backdrop-filter:blur(8px)}
+  .card .k{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+  .card .v{font-size:26px;font-weight:650;margin-top:6px;letter-spacing:-.02em}
+  .card .v small{font-size:12px;color:var(--muted);font-weight:500;margin-left:6px}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .col{flex:1;min-width:280px}
+  h2{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:26px 0 10px}
+  h2:first-child{margin-top:0}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{ text-align:left;font-weight:500;color:var(--dim);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+      padding:8px 10px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(13,15,21,.95)}
+  td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.045);vertical-align:top}
+  tr:hover td{background:rgba(255,255,255,.025)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+  .muted{color:var(--muted)} .dim{color:var(--dim)} .good{color:var(--good)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .tag{display:inline-block;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.06);
+       font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .tag.good{background:rgba(74,222,128,.12);color:var(--good)}
+  .tag.warn{background:rgba(251,191,36,.12);color:var(--warn)}
+  .tag.bad{background:rgba(248,113,113,.12);color:var(--bad)}
+  /* forms */
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  input,select,textarea{
+    background:rgba(255,255,255,.035);border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;outline:none;transition:border .18s,background .18s;width:100%;
+  }
+  input:focus,select:focus,textarea:focus{border-color:rgba(110,231,216,.45);background:rgba(255,255,255,.05)}
+  textarea{resize:vertical;min-height:64px}
+  .checks{display:flex;gap:18px;flex-wrap:wrap;padding:6px 0}
+  .check{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;cursor:pointer}
+  .check input{width:auto}
+  .btn{
+    all:unset;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;
+    border-radius:11px;cursor:pointer;border:1px solid var(--line);background:rgba(255,255,255,.05);
+    color:var(--text);font-size:13px;transition:transform .16s ease,background .16s ease,border .16s;
+  }
+  .btn:hover{background:rgba(255,255,255,.09);transform:translateY(-1px)}
+  .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+  .btn.primary{background:linear-gradient(135deg,rgba(110,231,216,.92),rgba(139,123,255,.92));color:#0a0c12;border:none;font-weight:600}
+  .btn.danger{border-color:rgba(248,113,113,.4);color:var(--bad)}
+  .btn.small{padding:7px 12px;font-size:12px;border-radius:9px}
+  .form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  .form-grid .wide{grid-column:span 2}
+  .form-grid .full{grid-column:1/-1}
+  /* console */
+  .console{background:#07090d;border:1px solid var(--line);border-radius:14px;height:300px;
+           overflow:auto;padding:14px 16px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+           font-size:12px;line-height:1.7;white-space:pre-wrap;color:#c8d2e4}
+  .console .ln{display:block}
+  .console .err{color:var(--bad)} .console .ok{color:var(--good)}
+  /* gauge */
+  .gauge{--score:0;width:132px;height:132px;border-radius:50%;position:relative;
+         background:conic-gradient(var(--accent) calc(var(--score)*1%), rgba(255,255,255,.07) 0);
+         display:grid;place-items:center;transition:background .6s ease}
+  .gauge::before{content:"";position:absolute;inset:11px;border-radius:50%;background:#0e1118}
+  .gauge .num{position:relative;font-size:32px;font-weight:650;letter-spacing:-.03em}
+  .gauge .grade{position:relative;font-size:11px;letter-spacing:.18em;color:var(--muted)}
+  .findings{display:flex;flex-direction:column;gap:7px;margin-top:12px}
+  .finding{display:flex;gap:10px;align-items:flex-start;font-size:12.5px}
+  .finding .mark{flex:0 0 auto;width:18px;height:18px;border-radius:6px;display:grid;place-items:center;font-size:11px}
+  .finding.ok .mark{background:rgba(74,222,128,.14);color:var(--good)}
+  .finding.no .mark{background:rgba(248,113,113,.14);color:var(--bad)}
+  /* detail drawer */
+  .drawer{position:fixed;inset:0;background:rgba(5,7,10,.55);backdrop-filter:blur(3px);display:none;z-index:40}
+  .drawer.on{display:block}
+  .drawer .sheet{position:absolute;right:0;top:0;bottom:0;width:min(520px,92vw);background:#0f1219;
+                 border-left:1px solid var(--line);padding:22px 24px;overflow:auto;animation:slide .26s ease}
+  @keyframes slide{from{transform:translateX(30px);opacity:.4}to{transform:none;opacity:1}}
+  .drawer h3{margin:2px 0 2px;font-size:18px}
+  .drawer .close{position:absolute;top:16px;right:18px}
+  dl.kv{display:grid;grid-template-columns:120px 1fr;gap:6px 12px;margin-top:16px;font-size:13px}
+  dl.kv dt{color:var(--dim)}
+  /* toast */
+  .toasts{position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:8px;z-index:80}
+  .toast{padding:11px 15px;border-radius:11px;background:#151a24;border:1px solid var(--line);
+         box-shadow:var(--shadow);font-size:13px;animation:fade .2s ease;max-width:380px}
+  .toast.bad{border-color:rgba(248,113,113,.4)}
+  .empty{padding:22px;color:var(--dim);text-align:center;font-size:13px}
+  .spin{width:14px;height:14px;border:2px solid rgba(255,255,255,.2);border-top-color:var(--accent);
+        border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .split{display:grid;grid-template-columns:1.05fr .95fr;gap:14px}
+  @media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}
+    .form-grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:760px){
+    .side{width:64px;flex-basis:64px;padding:18px 10px}
+    .brand span,.nav span,.side-foot{display:none}
+    .brand b{display:none}
+    .content{padding:16px}
+    .form-grid{grid-template-columns:1fr}.form-grid .wide{grid-column:auto}
+    .cards{grid-template-columns:1fr 1fr}
+  }
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.09);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="mark"></div>
+      <div><b>RACK</b><span>linkedin control</span></div>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-view="overview" class="on"><span class="ico">◈</span><span>Overview</span></button>
+      <button data-view="run"><span class="ico">▶</span><span>Run</span></button>
+      <button data-view="records"><span class="ico">≡</span><span>Records</span></button>
+      <button data-view="armor"><span class="ico">🛡</span><span>Armor</span></button>
+      <button data-view="logs"><span class="ico">⌁</span><span>Logs</span></button>
+    </nav>
+    <div class="side-foot">
+      <div><span class="dot" id="liveDot"></span><span id="connState">connecting</span></div>
+      <div class="mono" style="margin-top:6px" id="clock">--:--:--</div>
+      <div style="margin-top:10px">local only · 127.0.0.1</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div>
+        <h1 id="viewTitle">Overview</h1>
+        <div class="sub" id="viewSub">what the pool looks like right now</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="pill" id="runPill"><span class="dot" id="runDot"></span><b id="runState">idle</b></div>
+      <button class="btn small" onclick="refreshAll()">Refresh</button>
+      <button class="btn small primary" onclick="exportAll()">Export all</button>
+    </header>
+
+    <div class="content">
+      <!-- OVERVIEW -->
+      <section class="view on" id="view-overview">
+        <div class="grid cards">
+          <div class="card"><div class="k">Profiles</div><div class="v" id="statRecords">0</div></div>
+          <div class="card"><div class="k">With email</div><div class="v" id="statEmail">0</div></div>
+          <div class="card"><div class="k">Runs</div><div class="v" id="statRuns">0</div></div>
+          <div class="card"><div class="k">Stealth score</div><div class="v" id="statStealth">—<small id="statStealthGrade"></small></div></div>
+        </div>
+
+        <div class="split" style="margin-top:4px">
+          <div>
+            <h2>Recent runs</h2>
+            <div class="card" style="padding:6px 6px"><table id="runsTable"><tbody></tbody></table></div>
+            <h2>Latest profiles</h2>
+            <div class="card" style="padding:6px 6px"><table id="recentTable"><tbody></tbody></table></div>
+          </div>
+          <div>
+            <h2>Session</h2>
+            <div class="card" id="sessionCard"><div class="empty">no session telemetry yet</div></div>
+            <h2>Engine</h2>
+            <div class="card" id="engineCard"><div class="empty">loading…</div></div>
+            <h2>Quick actions</h2>
+            <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
+              <button class="btn small" onclick="go('run')">Start a run</button>
+              <button class="btn small" onclick="go('armor')">Audit browser</button>
+              <button class="btn small" onclick="scanProxies()">Scan proxies</button>
+              <button class="btn small" onclick="go('records')">Browse records</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RUN -->
+      <section class="view" id="view-run">
+        <div class="split">
+          <div class="card">
+            <h2 style="margin-top:0">New run</h2>
+            <div class="form-grid">
+              <div class="field"><label>Mode</label>
+                <select id="fMode">
+                  <option value="people">People</option>
+                  <option value="jobs">Jobs</option>
+                  <option value="candidates">Candidates</option>
+                </select></div>
+              <div class="field"><label>Limit (targets)</label><input id="fLimit" type="number" min="0" placeholder="0 = all"></div>
+              <div class="field"><label>Max profiles</label><input id="fMax" type="number" min="0" placeholder="0 = no cap"></div>
+              <div class="field wide"><label>Companies / keywords</label><input id="fCompanies" placeholder="Google, Microsoft"></div>
+              <div class="field"><label>Location</label><input id="fLocation" placeholder="United States"></div>
+              <div class="field full"><label>Titles (people mode)</label><input id="fTitles" placeholder="Recruiter, Talent Acquisition"></div>
+              <div class="field wide"><label>Job keywords (jobs mode)</label><input id="fKeywords" placeholder="data engineer"></div>
+              <div class="field"><label>Skills (candidates)</label><input id="fSkills" placeholder="Python, ML"></div>
+              <div class="field full"><label>Formats</label><input id="fFormats" value="xlsx,csv,json,md,html"></div>
+              <div class="checks full">
+                <label class="check"><input type="checkbox" id="fHeadless"> headless</label>
+                <label class="check"><input type="checkbox" id="fDry"> dry run</label>
+                <label class="check"><input type="checkbox" id="fFresh"> ignore completed</label>
+                <label class="check"><input type="checkbox" id="fNoDb"> no database</label>
+              </div>
+              <div class="field"><label>2FA wait (s)</label><input id="fChallenge" type="number" min="0" placeholder="0 = config"></div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:16px">
+              <button class="btn primary" id="btnStart" onclick="startRun()">Start run</button>
+              <button class="btn danger" id="btnStop" onclick="stopRun()" disabled>Stop</button>
+            </div>
+            <div class="muted" style="margin-top:10px;font-size:12px">
+              Headed runs can sit on LinkedIn's verification page — complete it in the window and the run continues.
+            </div>
+          </div>
+          <div class="card" style="display:flex;flex-direction:column">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+              <h2 style="margin:0">Live output</h2>
+              <span class="spacer" style="flex:1"></span>
+              <span class="tag" id="runTag">idle</span>
+            </div>
+            <div class="console" id="console"><span class="ln dim">nothing running.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RECORDS -->
+      <section class="view" id="view-records">
+        <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+          <input id="q" placeholder="Search name, title, company, location…" style="flex:1" oninput="onSearch()">
+          <select id="qLimit" onchange="loadRecords()" style="width:120px">
+            <option value="50">50 rows</option><option value="100">100</option><option value="250">250</option>
+          </select>
+          <span class="tag" id="recordCount">0</span>
+        </div>
+        <div class="card" style="padding:6px 6px;max-height:calc(100vh - 250px);overflow:auto">
+          <table id="recordsTable">
+            <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Location</th><th>Email</th><th>Score</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ARMOR -->
+      <section class="view" id="view-armor">
+        <div class="split">
+          <div class="card">
+            <h2 style="margin-top:0">Stealth audit</h2>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div class="field" style="flex:1;min-width:140px"><label>Engine</label>
+                <select id="aEngine"><option>auto</option><option>playwright</option><option>patchright</option><option>camoufox</option></select></div>
+              <div class="field" style="width:110px"><label>Country</label><input id="aCountry" maxlength="2" placeholder="US"></div>
+              <label class="check"><input type="checkbox" id="aHeaded"> headed</label>
+              <button class="btn primary" id="btnAudit" onclick="runStealth()">Audit</button>
+            </div>
+            <div style="display:flex;gap:22px;align-items:center;margin-top:20px">
+              <div class="gauge" id="gauge"><div style="text-align:center"><div class="num" id="gaugeNum">—</div><div class="grade" id="gaugeGrade">not run</div></div></div>
+              <div style="flex:1">
+                <div class="muted mono" id="auditMeta">run an audit to see what the browser looks like</div>
+                <div class="findings" id="findings"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h2 style="margin-top:0">Proxy pool</h2>
+            <div style="display:flex;gap:10px;align-items:flex-end">
+              <div class="field" style="flex:1"><label>Proxies (comma separated)</label>
+                <input id="pProxies" placeholder="http://user:pass@host:8080#DE"></div>
+              <label class="check"><input type="checkbox" id="pReset"> reset cooldowns</label>
+              <button class="btn" id="btnProxy" onclick="scanProxies()">Scan</button>
+            </div>
+            <div style="max-height:300px;overflow:auto;margin-top:14px">
+              <table id="proxyTable"><thead><tr><th>Proxy</th><th>Score</th><th>Blocks</th><th>Latency</th><th>Cooldown</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LOGS -->
+      <section class="view" id="view-logs">
+        <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+          <span class="tag" id="logTag">idle</span>
+          <span class="muted mono" id="logPath" style="flex:1"></span>
+          <button class="btn small" onclick="loadLog()">Refresh</button>
+          <a class="btn small" id="dlLog" href="#" onclick="downloadLog(event)">Download</a>
+        </div>
+        <div class="console" id="fullLog" style="height:calc(100vh - 260px)"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div class="drawer" id="drawer" onclick="if(event.target===this)closeDrawer()">
+  <div class="sheet">
+    <button class="btn small close" onclick="closeDrawer()">Close</button>
+    <div id="drawerBody"><div class="empty">loading…</div></div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { status:null, records:[], running:false, tab:"overview", searchTimer:null, logTimer:null };
+
+const TITLES = {
+  overview:["Overview","what the pool looks like right now"],
+  run:["Run","start, watch and stop a scrape"],
+  records:["Records","every stored profile, searchable"],
+  armor:["Armor","prove the browser, rank the proxies"],
+  logs:["Logs","the full run trail"],
+};
+
+function go(view){
+  state.tab = view;
+  document.querySelectorAll(".nav button").forEach(b => b.classList.toggle("on", b.dataset.view === view));
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "view-" + view));
+  $("viewTitle").textContent = TITLES[view][0];
+  $("viewSub").textContent = TITLES[view][1];
+  location.hash = view;
+  if (view === "records" && !state.records.length) loadRecords();
+  if (view === "logs") loadLog();
+}
+document.querySelectorAll(".nav button").forEach(b => b.onclick = () => go(b.dataset.view));
+
+async function api(path, options){
+  const res = await fetch(path, Object.assign({headers:{"Content-Type":"application/json"}}, options||{}));
+  let data = {};
+  try { data = await res.json(); } catch(e){}
+  if (!res.ok || data.ok === false) throw new Error(data.error || ("HTTP " + res.status));
+  return data;
+}
+function toast(message, bad){
+  const el = document.createElement("div");
+  el.className = "toast" + (bad ? " bad" : "");
+  el.textContent = message;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function fmt(value){ return value === null || value === undefined || value === "" ? "—" : String(value); }
+function esc(value){
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+}
+function ago(iso){
+  if (!iso) return "—";
+  const t = new Date(String(iso).replace(" ", "T"));
+  if (isNaN(t)) return iso;
+  const s = Math.max(0, (Date.now() - t.getTime())/1000);
+  if (s < 60) return Math.round(s) + "s ago";
+  if (s < 3600) return Math.round(s/60) + "m ago";
+  if (s < 86400) return Math.round(s/3600) + "h ago";
+  return Math.round(s/86400) + "d ago";
+}
+
+/* ── status ── */
+async function refreshAll(){ await Promise.allSettled([refreshStatus(), loadProxies()]); }
+async function refreshStatus(){
+  try{
+    const data = await api("/api/status");
+    state.status = data;
+    $("connState").textContent = "connected";
+    $("liveDot").classList.add("live");
+    renderOverview(data);
+    renderRun(data.run);
+  }catch(err){
+    $("connState").textContent = "offline";
+    $("liveDot").classList.remove("live");
+  }
+}
+
+function renderOverview(data){
+  const stats = data.stats || {};
+  $("statRecords").textContent = data.records ?? stats.total ?? 0;
+  $("statEmail").textContent = stats.with_email ?? 0;
+  $("statRuns").textContent = stats.runs ?? (data.runs||[]).length;
+  const telemetry = data.telemetry || {};
+  const score = telemetry.stealth_score;
+  $("statStealth").innerHTML = (score === undefined || score === null ? "—" : score) +
+    (telemetry.stealth_grade ? `<small>${esc(telemetry.stealth_grade)}</small>` : "");
+
+  const runsBody = $("runsTable").querySelector("tbody");
+  const runs = data.runs || [];
+  runsBody.innerHTML = runs.length ? runs.map(r => `
+    <tr>
+      <td><span class="tag ${r.status === "ok" || r.status === "completed" ? "good" : ""}">${esc(fmt(r.status))}</span></td>
+      <td>${esc(fmt(r.mode))}</td>
+      <td class="muted">${esc(ago(r.started_at))}</td>
+      <td class="mono muted">${esc(fmt(r.records ?? r.summary?.records ?? ""))}</td>
+    </tr>`).join("") : `<tr><td colspan="4"><div class="empty">no runs yet</div></td></tr>`;
+
+  const recentBody = $("recentTable").querySelector("tbody");
+  const recent = data.recent || [];
+  recentBody.innerHTML = recent.length ? recent.map((r, i) => `
+    <tr style="cursor:pointer" onclick="openRecord('${esc(r.public_id || r.linkedin_url || "")}')">
+      <td>${esc(fmt(r.name))}<div class="dim mono" style="font-size:11px">${esc(fmt(r.title))}</div></td>
+      <td class="muted">${esc(fmt(r.company))}</td>
+      <td class="muted">${esc(ago(r.last_seen))}</td>
+    </tr>`).join("") : `<tr><td colspan="3"><div class="empty">nothing stored yet</div></td></tr>`;
+
+  const session = $("sessionCard");
+  const keys = ["status","login","records_scraped","recovered","still_failed","ban_risk","stealth_score","stealth_grade"];
+  const present = keys.filter(k => telemetry[k] !== undefined && telemetry[k] !== null);
+  session.innerHTML = present.length ? `<dl class="kv">${present.map(k => {
+      const v = telemetry[k];
+      const shown = typeof v === "object" ? JSON.stringify(v) : v;
+      return `<dt>${esc(k)}</dt><dd>${esc(shown)}</dd>`;
+    }).join("")}</dl>` : `<div class="empty">no session telemetry yet</div>`;
+
+  const engines = data.engines || {};
+  $("engineCard").innerHTML = `
+    <dl class="kv">
+      <dt>best</dt><dd>${esc(engines.best_engine || "—")}</dd>
+      <dt>available</dt><dd>${esc((engines.engines||[]).join(", ") || "—")}</dd>
+      <dt>curl_cffi</dt><dd>${engines.curl_cffi ? '<span class="good">yes</span>' : '<span class="warn">no</span>'}</dd>
+      <dt>flaresolverr</dt><dd>${engines.flaresolverr_configured ? "configured" : "off"}</dd>
+    </dl>`;
+
+  if (data.run) renderRun(data.run);
+}
+
+const STATUS_CLASS = {done:"good", running:"warn", failed:"bad", stopped:"bad", idle:""};
+function renderRun(run){
+  if (!run) return;
+  state.running = !!run.running;
+  $("runState").textContent = run.status + (run.running && run.pid ? " · " + run.pid : "");
+  $("runDot").className = "dot" + (run.running ? " live" : "");
+  $("runTag").textContent = run.status;
+  $("runTag").className = "tag " + (STATUS_CLASS[run.status] || "");
+  $("btnStart").disabled = run.running;
+  $("btnStop").disabled = !run.running;
+  $("logPath").textContent = run.log_path || "";
+  $("logTag").textContent = run.status;
+  $("logTag").className = "tag " + (STATUS_CLASS[run.status] || "");
+  if (run.lines && run.lines.length) renderConsole($("console"), run.lines);
+  if (state.tab === "logs") renderConsole($("fullLog"), run.lines || []);
+  if (run.running && !state.logTimer) startLogPolling();
+  if (!run.running && state.logTimer){ clearInterval(state.logTimer); state.logTimer = null; }
+}
+function startLogPolling(){
+  if (state.logTimer) return;
+  state.logTimer = setInterval(async () => {
+    try{
+      const data = await api("/api/run/status?tail=500");
+      renderRun(data.run);
+    }catch(e){}
+  }, 1600);
+}
+function renderConsole(el, lines){
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  const html = lines.map(line => {
+    const cls = /error|failed|❌|Traceback/i.test(line) ? "err" : (/success|✅|finished/i.test(line) ? "ok" : "");
+    return `<span class="ln ${cls}">${esc(line)}</span>`;
+  }).join("");
+  el.innerHTML = html || '<span class="ln dim">no output yet.</span>';
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+/* ── run actions ── */
+function runPayload(){
+  return {
+    mode:$("fMode").value, limit:$("fLimit").value, max_profiles:$("fMax").value,
+    companies:$("fCompanies").value, titles:$("fTitles").value, keywords:$("fKeywords").value,
+    skills:$("fSkills").value, location:$("fLocation").value, formats:$("fFormats").value,
+    headless:$("fHeadless").checked, dry_run:$("fDry").checked, fresh:$("fFresh").checked,
+    no_db:$("fNoDb").checked, challenge_timeout:$("fChallenge").value,
+  };
+}
+async function startRun(){
+  $("btnStart").disabled = true;
+  try{
+    const data = await api("/api/run", {method:"POST", body:JSON.stringify(runPayload())});
+    toast("run started");
+    renderRun(data.run);
+    $("console").innerHTML = "";
+    startLogPolling();
+  }catch(err){ toast(err.message, true); $("btnStart").disabled = false; }
+}
+async function stopRun(){
+  try{
+    const data = await api("/api/run/stop", {method:"POST", body:"{}"});
+    toast("run stopped");
+    renderRun(data.run);
+  }catch(err){ toast(err.message, true); }
+}
+async function exportAll(){
+  toast("exporting…");
+  try{
+    const data = await api("/api/export", {method:"POST", body:JSON.stringify({formats:["xlsx","csv","json","md","html"]})});
+    const files = Object.values(data.files || {});
+    toast(`exported ${data.count} records · ${files.length} files`);
+    if (files.length){
+      const first = files[0];
+      const a = document.createElement("a");
+      a.href = "/api/download?path=" + encodeURIComponent(first);
+      a.download = "";
+      a.click();
+    }
+  }catch(err){ toast(err.message, true); }
+}
+
+/* ── records ── */
+function onSearch(){
+  clearTimeout(state.searchTimer);
+  state.searchTimer = setTimeout(loadRecords, 280);
+}
+async function loadRecords(){
+  const q = $("q").value.trim();
+  const limit = $("qLimit").value;
+  try{
+    const data = await api("/api/records?query=" + encodeURIComponent(q) + "&limit=" + limit);
+    state.records = data.records || [];
+    $("recordCount").textContent = data.count + " / " + data.total;
+    const body = $("recordsTable").querySelector("tbody");
+    body.innerHTML = state.records.length ? state.records.map(r => `
+      <tr style="cursor:pointer" onclick="openRecord('${esc(r.public_id || r.linkedin_url || "")}')">
+        <td>${esc(fmt(r.name))}</td>
+        <td class="muted">${esc(fmt(r.title))}</td>
+        <td class="muted">${esc(fmt(r.company))}</td>
+        <td class="muted">${esc(fmt(r.location))}</td>
+        <td class="mono">${esc(fmt(r.email))}</td>
+        <td>${r.match_score !== undefined ? esc(r.match_score) : "—"}</td>
+      </tr>`).join("") : `<tr><td colspan="6"><div class="empty">no matches</div></td></tr>`;
+  }catch(err){ toast(err.message, true); }
+}
+async function openRecord(key){
+  if (!key) return;
+  $("drawer").classList.add("on");
+  $("drawerBody").innerHTML = '<div class="empty"><span class="spin"></span> loading…</div>';
+  try{
+    const data = await api("/api/record?id=" + encodeURIComponent(key));
+    const r = data.record || {};
+    const preferred = ["name","title","company","location","email","phone","seniority","seniority_label",
+      "total_experience_years","followers","connections","open_to_work","match_score","linkedin_url","public_id"];
+    const rows = preferred.filter(k => r[k] !== undefined && r[k] !== null && r[k] !== "")
+      .map(k => `<dt>${esc(k.replace(/_/g," "))}</dt><dd>${esc(r[k])}</dd>`).join("");
+    const extra = Object.keys(r).filter(k => !preferred.includes(k) && r[k] !== "" && r[k] !== null &&
+      typeof r[k] !== "object").slice(0, 30)
+      .map(k => `<dt>${esc(k.replace(/_/g," "))}</dt><dd>${esc(r[k])}</dd>`).join("");
+    $("drawerBody").innerHTML = `
+      <h3>${esc(fmt(r.name))}</h3>
+      <div class="muted">${esc(fmt(r.headline || r.title))}</div>
+      ${r.linkedin_url ? `<div style="margin-top:10px"><a class="btn small" target="_blank" href="${esc(r.linkedin_url)}">Open on LinkedIn</a></div>` : ""}
+      <dl class="kv">${rows}</dl>
+      ${extra ? `<h2 style="margin-top:22px">All fields</h2><dl class="kv">${extra}</dl>` : ""}`;
+  }catch(err){
+    $("drawerBody").innerHTML = `<div class="empty bad">${esc(err.message)}</div>`;
+  }
+}
+function closeDrawer(){ $("drawer").classList.remove("on"); }
+
+/* ── armor ── */
+async function runStealth(){
+  $("btnAudit").disabled = true;
+  $("auditMeta").innerHTML = '<span class="spin"></span> launching browser and probing…';
+  try{
+    const data = await api("/api/stealth", {method:"POST", body:JSON.stringify({
+      engine:$("aEngine").value, headed:$("aHeaded").checked, country:$("aCountry").value.trim()
+    })});
+    renderAudit(data.result || {});
+    toast("audit complete");
+  }catch(err){ toast(err.message, true); $("auditMeta").textContent = err.message; }
+  finally{ $("btnAudit").disabled = false; }
+}
+function renderAudit(result){
+  const score = Number(result.score || 0);
+  const grade = result.grade || "?";
+  $("gauge").style.setProperty("--score", Math.max(0, Math.min(100, score)));
+  $("gaugeNum").textContent = score;
+  $("gaugeGrade").textContent = "grade " + grade;
+  const fp = result.fingerprint || {};
+  $("auditMeta").innerHTML = [
+    fp.platform_label ? esc(fp.platform_label) : "", fp.ua_version ? "Chrome " + esc(fp.ua_version) : "",
+    fp.timezone_id ? esc(fp.timezone_id) : "", result.scriptable ? "scriptable" : "no script injection",
+  ].filter(Boolean).join(" · ");
+  const findings = result.findings || [];
+  $("findings").innerHTML = findings.length ? findings.map(f => `
+    <div class="finding ${f.ok ? "ok" : "no"}">
+      <span class="mark">${f.ok ? "✓" : "✕"}</span>
+      <span><b>${esc(f.id)}</b> <span class="muted">${esc(f.detail)}</span></span>
+    </div>`).join("") : '<div class="empty">no findings</div>';
+}
+async function loadProxies(){
+  try{
+    const data = await api("/api/proxies");
+    renderProxies(data.proxies || []);
+  }catch(e){}
+}
+function renderProxies(rows){
+  const body = $("proxyTable").querySelector("tbody");
+  body.innerHTML = rows.length ? rows.map(p => `
+    <tr>
+      <td class="mono">${esc(p.url)}${p.country ? ` <span class="tag">${esc(p.country)}</span>` : ""}</td>
+      <td><span class="tag ${p.score >= 70 ? "good" : p.score >= 40 ? "warn" : "bad"}">${esc(p.score)}</span></td>
+      <td>${esc(p.blocks)}</td>
+      <td>${p.latency_ms ? esc(Math.round(p.latency_ms)) + " ms" : "—"}</td>
+      <td>${p.cooling_for ? esc(p.cooling_for) + "s" : "—"}</td>
+    </tr>`).join("") : `<tr><td colspan="5"><div class="empty">no proxies recorded</div></td></tr>`;
+}
+async function scanProxies(){
+  const btn = $("btnProxy");
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+  try{
+    const data = await api("/api/proxy-scan", {method:"POST", body:JSON.stringify({
+      proxies:$("pProxies").value, reset:$("pReset").checked
+    })});
+    renderProxies((data.result && data.result.scoreboard) || []);
+    const results = (data.result && data.result.results) || [];
+    toast(results.length ? `scanned ${results.length} proxies` : "no proxies configured");
+  }catch(err){ toast(err.message, true); }
+  finally{ btn.disabled = false; btn.textContent = "Scan"; }
+}
+
+/* ── logs ── */
+async function loadLog(){
+  try{
+    const data = await api("/api/run/status?tail=1000");
+    renderRun(data.run);
+    renderConsole($("fullLog"), (data.run && data.run.lines) || []);
+    $("dlLog").href = "/api/download?path=" + encodeURIComponent((data.run && data.run.log_path) || "output/dashboard_run.log");
+  }catch(err){ toast(err.message, true); }
+}
+function downloadLog(event){
+  event.preventDefault();
+  window.location = event.target.href || $("dlLog").href;
+}
+
+/* ── boot ── */
+setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+const initial = (location.hash || "#overview").slice(1);
+go(TITLES[initial] ? initial : "overview");
+refreshAll();
+setInterval(refreshStatus, 3200);
+</script>
+</body>
+</html>

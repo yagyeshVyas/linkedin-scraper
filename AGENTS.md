@@ -90,10 +90,11 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 - The dashboard table's sort coerces with `String(a[key] ?? "")`; without that, sorting any
   boolean/number column (open_to_work, follower_count, connection_count) throws.
 - Behavioral tests: `test_scraper_fixes.py` (33 tests), `test_login_flow.py` (5 tests),
-  `test_power_features.py` (58 tests), `test_cf_agent.py` (46 tests) and `test_brutal.py`
-  (53 tests) — run each with `.venv/Scripts/python.exe <file>` (no browser or network needed;
-  the login suite drives the real `login()` against fakes). No pytest in the venv — each file
-  is a plain script with a `__main__` runner list; add new tests to that list.
+  `test_power_features.py` (58 tests), `test_cf_agent.py` (46 tests), `test_brutal.py`
+  (53 tests) and `test_webapp.py` (18 tests) — run each with `.venv/Scripts/python.exe <file>`
+  (no browser or network needed; the login suite drives the real `login()` against fakes, the
+  dashboard suite binds an ephemeral loopback port). No pytest in the venv — each file is a
+  plain script with a `__main__` runner list; add new tests to that list.
 
 ## Power stack (v5.0, 2026-11)
 
@@ -234,6 +235,29 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   eight new MCP tools, tagged-proxy scraper wiring. Run all FIVE suites.
 - Runtime artifacts now ignored: `output/proxy_intel.json`, `output/_intel_brutal.json`,
   `output/agent_downloads/`.
+
+
+## Dashboard (v7.2, 2026-11)
+
+- `webapp.py` (stdlib `ThreadingHTTPServer`) + `dashboard_ui.html` (one file, no build, no
+  framework) are the local control room: `python cli.py dashboard --open`. Default port
+  **8765** — 8787 is taken/excluded on this machine (WinError 10013/10048). Bound to
+  127.0.0.1 only.
+- `RunManager` owns exactly ONE `cli.py run` subprocess; a second start raises and the API
+  returns 409. stdout streams to `output/dashboard_run.log` plus a 5,000-line ring. Stop on
+  Windows is `taskkill /PID <pid> /T /F` scoped to that run's own tree — never an image-name
+  kill (see the machine-wide Chrome rule).
+- `stealth-check` and `proxy-scan` actions run the real CLI as subprocesses and parse
+  `--json`, so the dashboard cannot drift from the command line.
+- `/api/status` caches the database section for 4s but always refreshes the live run
+  snapshot. `/api/download` resolves the path and rejects anything outside the repo, plus
+  non-report suffixes — keep that guard.
+- UI contract used by the tests: tab buttons are `data-view="..."`, panels are
+  `#view-<name>`, and these ids exist: `recordsTable`, `runsTable`, `recentTable`,
+  `btnAudit`, `btnProxy`, `gauge`, `console`, `fullLog`. JS polls status every 3.2s and the
+  log every 1.6s while a run is active.
+- `test_webapp.py` (18 tests) boots the real handler on an ephemeral loopback port, so it
+  covers HTTP without a browser. Run all SIX suites before claiming a change works.
 
 
 ## Security

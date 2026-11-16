@@ -81,6 +81,44 @@
   .tag.good{background:rgba(74,222,128,.12);color:var(--good)}
   .tag.warn{background:rgba(251,191,36,.12);color:var(--warn)}
   .tag.bad{background:rgba(248,113,113,.12);color:var(--bad)}
+  /* modes */
+  .mode-switch{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:8px;
+    background:rgba(255,255,255,.028);border:1px solid var(--line);border-radius:16px}
+  .mode-btn{all:unset;display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;
+    cursor:pointer;transition:background .2s ease,box-shadow .2s ease,transform .2s ease}
+  .mode-btn .m-ico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+    background:rgba(255,255,255,.05);color:var(--muted);font-size:14px;flex:0 0 auto}
+  .mode-btn b{display:block;font-size:13.5px;font-weight:600}
+  .mode-btn small{display:block;color:var(--dim);font-size:11.5px;margin-top:1px}
+  .mode-btn:hover{background:rgba(255,255,255,.045)}
+  .mode-btn.on{background:linear-gradient(135deg,rgba(110,231,216,.13),rgba(139,123,255,.13));
+    box-shadow:inset 0 0 0 1px rgba(110,231,216,.22)}
+  .mode-btn.on .m-ico{background:rgba(110,231,216,.16);color:var(--accent)}
+  .mode-panel{display:none}
+  .mode-panel.on{display:block;animation:fade .26s ease}
+  .panel-head{margin-bottom:16px}
+  .panel-head h3{margin:0 0 5px;font-size:16px;letter-spacing:-.01em}
+  .panel-head p{margin:0;color:var(--muted);font-size:12.5px;line-height:1.55}
+  details.adv{border:1px dashed var(--line);border-radius:12px;padding:10px 13px;margin-top:14px}
+  details.adv summary{cursor:pointer;color:var(--muted);font-size:12px;letter-spacing:.04em;user-select:none}
+  details.adv summary:hover{color:var(--text)}
+  details.adv[open] summary{margin-bottom:4px}
+  .common-block{margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}
+  .common-block h3{margin:0 0 12px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+  .run-summary{margin-top:16px;padding:11px 14px;border-radius:11px;border:1px solid var(--line);
+    background:rgba(110,231,216,.05);font-size:12.5px;color:var(--muted)}
+  .run-summary b{color:var(--text);font-weight:600}
+  .grid.modes{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .mode-card{all:unset;display:flex;align-items:flex-start;gap:12px;padding:16px 17px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);
+    transition:transform .18s ease,border-color .18s ease,background .18s ease}
+  .mode-card:hover{transform:translateY(-2px);border-color:rgba(110,231,216,.28);background:rgba(24,30,40,.9)}
+  .mode-card .mc-ico{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+    background:rgba(255,255,255,.05);color:var(--accent);flex:0 0 auto}
+  .mode-card b{display:block;font-size:13.5px;margin-bottom:3px}
+  .mode-card p{margin:0;color:var(--dim);font-size:11.5px;line-height:1.5}
+  .mode-card .mc-go{margin-left:auto;color:var(--dim);font-size:15px;align-self:center}
+  @media(max-width:1100px){.grid.modes{grid-template-columns:1fr}.mode-switch{grid-template-columns:1fr}}
   /* forms */
   .field{display:flex;flex-direction:column;gap:6px}
   .field label{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
@@ -201,6 +239,25 @@
           <div class="card"><div class="k">Stealth score</div><div class="v" id="statStealth">—<small id="statStealthGrade"></small></div></div>
         </div>
 
+        <h2>Search modes</h2>
+        <div class="grid modes">
+          <button class="mode-card" onclick="goMode('people')">
+            <span class="mc-ico">◈</span>
+            <div><b>People</b><p>Recruiters, engineers, leaders — by company, title, network and seniority.</p></div>
+            <span class="mc-go">→</span>
+          </button>
+          <button class="mode-card" onclick="goMode('jobs')">
+            <span class="mc-ico">▤</span>
+            <div><b>Jobs</b><p>Open listings by keyword with recency, level, workplace and contract filters.</p></div>
+            <span class="mc-go">→</span>
+          </button>
+          <button class="mode-card" onclick="goMode('candidates')">
+            <span class="mc-ico">◇</span>
+            <div><b>Candidates</b><p>Source people by skill set, then narrow by a title substring.</p></div>
+            <span class="mc-go">→</span>
+          </button>
+        </div>
+
         <div class="split" style="margin-top:4px">
           <div>
             <h2>Recent runs</h2>
@@ -226,33 +283,117 @@
 
       <!-- RUN -->
       <section class="view" id="view-run">
-        <div class="split">
+        <div class="mode-switch" id="modeSwitch">
+          <button class="mode-btn on" data-mode="people">
+            <span class="m-ico">◈</span><span><b>People</b><small>find roles at target companies</small></span>
+          </button>
+          <button class="mode-btn" data-mode="jobs">
+            <span class="m-ico">▤</span><span><b>Jobs</b><small>open listings by keyword</small></span>
+          </button>
+          <button class="mode-btn" data-mode="candidates">
+            <span class="m-ico">◇</span><span><b>Candidates</b><small>source people by skills</small></span>
+          </button>
+        </div>
+
+        <div class="split" style="margin-top:14px">
           <div class="card">
-            <h2 style="margin-top:0">New run</h2>
-            <div class="form-grid">
-              <div class="field"><label>Mode</label>
-                <select id="fMode">
-                  <option value="people">People</option>
-                  <option value="jobs">Jobs</option>
-                  <option value="candidates">Candidates</option>
-                </select></div>
-              <div class="field"><label>Limit (targets)</label><input id="fLimit" type="number" min="0" placeholder="0 = all"></div>
-              <div class="field"><label>Max profiles</label><input id="fMax" type="number" min="0" placeholder="0 = no cap"></div>
-              <div class="field wide"><label>Companies / keywords</label><input id="fCompanies" placeholder="Google, Microsoft"></div>
-              <div class="field"><label>Location</label><input id="fLocation" placeholder="United States"></div>
-              <div class="field full"><label>Titles (people mode)</label><input id="fTitles" placeholder="Recruiter, Talent Acquisition"></div>
-              <div class="field wide"><label>Job keywords (jobs mode)</label><input id="fKeywords" placeholder="data engineer"></div>
-              <div class="field"><label>Skills (candidates)</label><input id="fSkills" placeholder="Python, ML"></div>
-              <div class="field full"><label>Formats</label><input id="fFormats" value="xlsx,csv,json,md,html"></div>
-              <div class="checks full">
-                <label class="check"><input type="checkbox" id="fHeadless"> headless</label>
-                <label class="check"><input type="checkbox" id="fDry"> dry run</label>
-                <label class="check"><input type="checkbox" id="fFresh"> ignore completed</label>
-                <label class="check"><input type="checkbox" id="fNoDb"> no database</label>
+            <div class="mode-panel on" data-panel="people">
+              <div class="panel-head">
+                <h3>People search</h3>
+                <p>A title at a company, narrowed by network degree and seniority. This is the recruiter's main door.</p>
               </div>
-              <div class="field"><label>2FA wait (s)</label><input id="fChallenge" type="number" min="0" placeholder="0 = config"></div>
+              <div class="form-grid">
+                <div class="field wide"><label>Companies</label><input id="pCompanies" placeholder="Google, Microsoft, Stripe"></div>
+                <div class="field"><label>Location</label><input id="pLocation" placeholder="United States"></div>
+                <div class="field full"><label>Job titles</label><input id="pTitles" placeholder="Recruiter, Talent Acquisition, HR Manager"></div>
+                <div class="field"><label>Network</label>
+                  <select id="pNetwork">
+                    <option value="">Anyone</option><option value="F">1st degree</option>
+                    <option value="S">2nd degree</option><option value="O">3rd+</option>
+                  </select></div>
+                <div class="field"><label>Seniority</label>
+                  <select id="pSeniority">
+                    <option value="">Any level</option><option value="entry">Entry</option>
+                    <option value="senior">Senior</option><option value="mid_senior">Mid-senior</option>
+                    <option value="director">Director</option><option value="executive">Executive</option>
+                  </select></div>
+              </div>
+              <details class="adv">
+                <summary>Advanced facets — numeric LinkedIn IDs</summary>
+                <div class="form-grid" style="margin-top:10px">
+                  <div class="field"><label>Current company IDs</label><input id="pCurrent" placeholder="1035, 1441"></div>
+                  <div class="field"><label>Past company IDs</label><input id="pPast" placeholder="2056"></div>
+                  <div class="field"><label>School IDs</label><input id="pSchool" placeholder="17901"></div>
+                  <div class="field"><label>Industry IDs</label><input id="pIndustry" placeholder="4"></div>
+                </div>
+              </details>
             </div>
-            <div style="display:flex;gap:10px;margin-top:16px">
+
+            <div class="mode-panel" data-panel="jobs">
+              <div class="panel-head">
+                <h3>Job search</h3>
+                <p>Listings by keyword with native LinkedIn facets — recency, level, workplace, contract type.</p>
+              </div>
+              <div class="form-grid">
+                <div class="field wide"><label>Keywords</label><input id="jKeywords" placeholder="data engineer, solutions architect"></div>
+                <div class="field"><label>Location</label><input id="jLocation" placeholder="United States"></div>
+                <div class="field"><label>Date posted</label>
+                  <select id="jDate">
+                    <option value="">Any time</option><option value="r86400">Past 24 hours</option>
+                    <option value="r604800">Past week</option><option value="r2592000">Past month</option>
+                  </select></div>
+                <div class="field"><label>Experience</label>
+                  <select id="jLevel">
+                    <option value="">Any</option><option value="1">Internship</option><option value="2">Entry</option>
+                    <option value="3">Associate</option><option value="4">Mid-senior</option>
+                    <option value="5">Director</option><option value="6">Executive</option>
+                  </select></div>
+                <div class="field"><label>Workplace</label>
+                  <select id="jWorkplace">
+                    <option value="">Any</option><option value="1">On-site</option>
+                    <option value="2">Remote</option><option value="3">Hybrid</option>
+                  </select></div>
+                <div class="field"><label>Job type</label>
+                  <select id="jTypes">
+                    <option value="">Any</option><option value="F">Full-time</option><option value="C">Contract</option>
+                    <option value="P">Part-time</option><option value="T">Temporary</option><option value="I">Internship</option>
+                  </select></div>
+                <div class="field"><label>Max pages</label><input id="jPages" type="number" min="0" placeholder="config"></div>
+                <label class="check" style="align-self:end;padding-bottom:10px"><input type="checkbox" id="jEasy"> easy apply only</label>
+              </div>
+            </div>
+
+            <div class="mode-panel" data-panel="candidates">
+              <div class="panel-head">
+                <h3>Candidate sourcing</h3>
+                <p>People whose profile matches a skill set, optionally limited to a title substring.</p>
+              </div>
+              <div class="form-grid">
+                <div class="field wide"><label>Skills</label><input id="cSkills" placeholder="Python, Machine Learning, Kubernetes"></div>
+                <div class="field"><label>Location</label><input id="cLocation" placeholder="United States"></div>
+                <div class="field"><label>Title filter</label><input id="cTitle" placeholder="Engineer"></div>
+                <div class="field"><label>Max pages</label><input id="cPages" type="number" min="0" placeholder="config"></div>
+              </div>
+            </div>
+
+            <div class="common-block">
+              <h3>Limits & output</h3>
+              <div class="form-grid">
+                <div class="field"><label>Targets (limit)</label><input id="fLimit" type="number" min="0" placeholder="0 = all"></div>
+                <div class="field"><label>Max profiles</label><input id="fMax" type="number" min="0" placeholder="0 = no cap"></div>
+                <div class="field"><label>2FA wait (s)</label><input id="fChallenge" type="number" min="0" placeholder="0 = config"></div>
+                <div class="field full"><label>Formats</label><input id="fFormats" value="xlsx,csv,json,md,html"></div>
+                <div class="checks full">
+                  <label class="check"><input type="checkbox" id="fHeadless"> headless</label>
+                  <label class="check"><input type="checkbox" id="fDry"> dry run</label>
+                  <label class="check"><input type="checkbox" id="fFresh"> ignore completed</label>
+                  <label class="check"><input type="checkbox" id="fNoDb"> no database</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="run-summary" id="runSummary"><b>People</b> · fill companies and titles</div>
+            <div style="display:flex;gap:10px;margin-top:14px">
               <button class="btn primary" id="btnStart" onclick="startRun()">Start run</button>
               <button class="btn danger" id="btnStop" onclick="stopRun()" disabled>Stop</button>
             </div>
@@ -347,7 +488,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { status:null, records:[], running:false, tab:"overview", searchTimer:null, logTimer:null };
+const state = { status:null, records:[], running:false, tab:"overview", mode:"people", searchTimer:null, logTimer:null };
 
 const TITLES = {
   overview:["Overview","what the pool looks like right now"],
@@ -502,15 +643,71 @@ function renderConsole(el, lines){
 }
 
 /* ── run actions ── */
+function setMode(mode){
+  state.mode = mode;
+  document.querySelectorAll("#modeSwitch .mode-btn").forEach(b =>
+    b.classList.toggle("on", b.dataset.mode === mode));
+  document.querySelectorAll("#view-run .mode-panel").forEach(p =>
+    p.classList.toggle("on", p.dataset.panel === mode));
+  updateSummary();
+}
+function goMode(mode){ go("run"); setMode(mode); }
+function val(id){ const el = $(id); return el ? el.value.trim() : ""; }
+function selectedText(id, fallback){
+  const el = $(id);
+  return el && el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent : fallback;
+}
+function updateSummary(){
+  let text = "";
+  if (state.mode === "people"){
+    const titles = val("pTitles") || "any title";
+    const companies = val("pCompanies") || "any company";
+    text = `<b>People</b> · ${esc(titles)} at ${esc(companies)} · ${esc(selectedText("pNetwork","Anyone"))}`;
+  } else if (state.mode === "jobs"){
+    const keyword = val("jKeywords") || "any keyword";
+    const bits = [selectedText("jDate",""), selectedText("jWorkplace",""), selectedText("jTypes","")]
+      .filter(x => x && x !== "Any time" && x !== "Any");
+    text = `<b>Jobs</b> · ${esc(keyword)}${bits.length ? " · " + bits.map(esc).join(" · ") : ""}`;
+  } else {
+    text = `<b>Candidates</b> · ${esc(val("cSkills") || "any skill")}` +
+      (val("cTitle") ? ` · title contains ${esc(val("cTitle"))}` : "");
+  }
+  $("runSummary").innerHTML = text;
+}
 function runPayload(){
-  return {
-    mode:$("fMode").value, limit:$("fLimit").value, max_profiles:$("fMax").value,
-    companies:$("fCompanies").value, titles:$("fTitles").value, keywords:$("fKeywords").value,
-    skills:$("fSkills").value, location:$("fLocation").value, formats:$("fFormats").value,
-    headless:$("fHeadless").checked, dry_run:$("fDry").checked, fresh:$("fFresh").checked,
+  const payload = {
+    mode: state.mode, limit:$("fLimit").value, max_profiles:$("fMax").value,
+    formats:$("fFormats").value, headless:$("fHeadless").checked,
+    dry_run:$("fDry").checked, fresh:$("fFresh").checked,
     no_db:$("fNoDb").checked, challenge_timeout:$("fChallenge").value,
   };
+  if (state.mode === "people"){
+    Object.assign(payload, {
+      companies:val("pCompanies"), titles:val("pTitles"), location:val("pLocation"),
+      network:val("pNetwork"), seniority:val("pSeniority"),
+      current_company_ids:val("pCurrent"), past_company_ids:val("pPast"),
+      school_ids:val("pSchool"), industry_ids:val("pIndustry"),
+    });
+  } else if (state.mode === "jobs"){
+    Object.assign(payload, {
+      keywords:val("jKeywords"), location:val("jLocation"), date_posted:val("jDate"),
+      experience_levels:val("jLevel"), workplace:val("jWorkplace"),
+      job_types:val("jTypes"), max_pages:val("jPages"), easy_apply:$("jEasy").checked,
+    });
+  } else {
+    Object.assign(payload, {
+      skills:val("cSkills"), title_filter:val("cTitle"),
+      location:val("cLocation"), max_candidate_pages:val("cPages"),
+    });
+  }
+  return payload;
 }
+document.querySelectorAll("#modeSwitch .mode-btn").forEach(b =>
+  b.addEventListener("click", () => setMode(b.dataset.mode)));
+document.querySelectorAll("#view-run input, #view-run select").forEach(el =>
+  el.addEventListener("input", updateSummary));
+document.querySelectorAll("#view-run select").forEach(el =>
+  el.addEventListener("change", updateSummary));
 async function startRun(){
   $("btnStart").disabled = true;
   try{
@@ -674,6 +871,7 @@ function downloadLog(event){
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
 const initial = (location.hash || "#overview").slice(1);
 go(TITLES[initial] ? initial : "overview");
+setMode("people");
 refreshAll();
 setInterval(refreshStatus, 3200);
 </script>

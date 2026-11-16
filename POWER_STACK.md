@@ -729,8 +729,8 @@ Five views:
 
 | View | Contents |
 | --- | --- |
-| Overview | records / email coverage / runs / stealth score cards, recent runs, latest profiles, session telemetry, engine report, quick actions |
-| Run | full run form (mode, companies, titles, keywords, skills, location, limits, formats, headless, dry-run, fresh, no-db, 2FA wait), start/stop, live log console |
+| Overview | records / email coverage / runs / stealth score cards, three search-mode cards, recent runs, latest profiles, session telemetry, engine report, quick actions |
+| Run | three dedicated panels: **People** (companies, titles, location, network degree, seniority, advanced current/past company, school and industry IDs), **Jobs** (keywords, recency, experience level, workplace, contract type, easy-apply, pages), **Candidates** (skills, title filter, pages). Shared limits/formats/headless/dry-run/2FA, a live search-recipe summary, start/stop and the streaming console |
 | Records | debounced search across the store, row click opens a side sheet with every field |
 | Armor | stealth audit with gauge + findings; proxy scan with score/block/latency/cooldown table |
 | Logs | full run log, downloadable |
@@ -755,7 +755,7 @@ JSON endpoints: `status`, `records`, `record?id=`, `runs`, `proxies`,
 `run/status`, `run`, `run/stop`, `stealth`, `proxy-scan`, `export`,
 `download?path=`, `health`.
 
-Tests: `test_webapp.py` (20) covers argument building, clamping, status shape
+Tests: `test_webapp.py` (21) covers argument building, mode-specific facets, clamping, status shape
 with an empty store, the UI contract, CLI wiring (`dashboard`, `main` default),
 loopback HTTP (`health`, `status`, index, records, proxy-scan) and the download
 traversal guard.

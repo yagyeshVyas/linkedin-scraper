@@ -48,6 +48,36 @@ def test_build_run_args_rejects_unknown_mode():
         raise AssertionError("expected ValueError")
 
 
+def test_build_run_args_mode_specific_facets():
+    people = " ".join(build_run_args({
+        "mode": "people", "companies": "Google", "titles": "Recruiter",
+        "network": "S", "seniority": "director", "current_company_ids": "1035",
+        "past_company_ids": "1441", "school_ids": "17901", "industry_ids": "4",
+    }))
+    assert "--network S" in people and "--seniority director" in people
+    assert "--current-company-ids 1035" in people
+    assert "--past-company-ids 1441" in people
+    assert "--school-ids 17901" in people and "--industry-ids 4" in people
+
+    jobs = " ".join(build_run_args({
+        "mode": "jobs", "keywords": "data engineer", "date_posted": "r604800",
+        "experience_levels": "4", "workplace": "2", "job_types": "F,C",
+        "easy_apply": True, "max_pages": 3,
+    }))
+    assert "--date-posted r604800" in jobs
+    assert "--experience-levels 4" in jobs
+    assert "--workplace 2" in jobs and "--job-types F,C" in jobs
+    assert "--easy-apply" in jobs and "--max-pages 3" in jobs
+
+    candidates = " ".join(build_run_args({
+        "mode": "candidates", "skills": "Python", "title_filter": "Engineer",
+        "max_candidate_pages": 2,
+    }))
+    assert "--skills Python" in candidates
+    assert "--title-filter Engineer" in candidates
+    assert "--max-candidate-pages 2" in candidates
+
+
 def test_clean_int_clamps():
     assert _clean_int("12") == 12
     assert _clean_int("999999") == 100000
@@ -107,6 +137,13 @@ def test_ui_file_has_the_doors():
                    'id="recordsTable"', 'id="btnAudit"', 'id="btnProxy"',
                    'id="console"', 'id="gauge"'):
         assert marker in html, marker
+    # Three distinct run panels, not one generic form.
+    for mode in ("people", "jobs", "candidates"):
+        assert f'data-mode="{mode}"' in html
+        assert f'data-panel="{mode}"' in html
+    for field in ('id="pCompanies"', 'id="jKeywords"', 'id="cSkills"',
+                  'id="pNetwork"', 'id="jDate"', 'id="cTitle"'):
+        assert field in html, field
 
 
 def test_run_cli_json_tolerates_non_json_output():
@@ -219,6 +256,7 @@ def main():
         test_build_run_args_defaults,
         test_build_run_args_full_form,
         test_build_run_args_rejects_unknown_mode,
+        test_build_run_args_mode_specific_facets,
         test_clean_int_clamps,
         test_clean_int_custom_range,
         test_status_shape_with_empty_store,

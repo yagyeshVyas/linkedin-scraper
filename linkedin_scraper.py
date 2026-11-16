@@ -2544,6 +2544,7 @@ class LinkedInScraper:
             experience_levels=experience,
             workplace=workplace,
             easy_apply=bool(getattr(cfg, "JOB_EASY_APPLY", False)),
+            job_types=list(getattr(cfg, "JOB_TYPES", []) or []),
             sort_by=str(getattr(cfg, "JOB_SORT_BY", "") or ""),
             start=start,
         ).validate()

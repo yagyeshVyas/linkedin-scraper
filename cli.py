@@ -78,6 +78,21 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--past-company-ids", default="", help="numeric LinkedIn company IDs")
     run.add_argument("--school-ids", default="", help="numeric LinkedIn school IDs")
     run.add_argument("--industry-ids", default="", help="numeric LinkedIn industry IDs")
+    run.add_argument("--title-filter", default="",
+                     help="candidates mode: only titles containing this")
+    run.add_argument("--date-posted", default="",
+                     help="jobs mode: r86400 / r604800 / r2592000 (empty = config)")
+    run.add_argument("--experience-levels", default="",
+                     help="jobs mode: 1..6 comma list (empty = config)")
+    run.add_argument("--workplace", default="",
+                     help="jobs mode: 1 on-site, 2 remote, 3 hybrid")
+    run.add_argument("--job-types", default="",
+                     help="jobs mode: F,C,P,T,I comma list")
+    run.add_argument("--easy-apply", action="store_true", help="jobs mode: easy apply only")
+    run.add_argument("--max-pages", type=int, default=0,
+                     help="jobs mode: max result pages per keyword (0 = config)")
+    run.add_argument("--max-candidate-pages", type=int, default=0,
+                     help="candidates mode: max pages per skill (0 = config)")
 
     export = sub.add_parser("export", help="export stored records to one or more formats")
     export.add_argument("--format", default="all",
@@ -261,6 +276,24 @@ def cmd_run(args) -> int:
         config.RESUME_FILE_PATH = args.resume
     if args.min_score is not None:
         config.MATCH_MIN_SCORE = float(args.min_score)
+
+    # Mode-specific facets (all optional; empty flags keep config values).
+    if getattr(args, "title_filter", ""):
+        config.CANDIDATE_TITLE_FILTER = args.title_filter.strip()
+    if getattr(args, "date_posted", ""):
+        config.JOB_DATE_POSTED = args.date_posted.strip()
+    if getattr(args, "experience_levels", ""):
+        config.JOB_EXPERIENCE_LEVEL = _split_csv(args.experience_levels)[0]
+    if getattr(args, "workplace", ""):
+        config.JOB_REMOTE_FILTER = args.workplace.strip()
+    if getattr(args, "job_types", ""):
+        config.JOB_TYPES = _split_csv(args.job_types)
+    if getattr(args, "easy_apply", False):
+        config.JOB_EASY_APPLY = True
+    if getattr(args, "max_pages", 0):
+        config.MAX_JOB_PAGES = max(1, int(args.max_pages))
+    if getattr(args, "max_candidate_pages", 0):
+        config.MAX_CANDIDATE_PAGES = max(1, int(args.max_candidate_pages))
 
     # Search filters (people mode) - empty flags keep the config values.
     for attr, value in (

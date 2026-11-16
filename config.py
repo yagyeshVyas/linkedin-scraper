@@ -128,6 +128,9 @@ class Config:
     JOB_EXPERIENCE_LEVEL: str = "2" # 2=Entry, 3=Associate, 4=Mid-Senior, 5=Director
     JOB_DATE_POSTED: str      = "r86400" # "r86400"=Past 24 Hours, "r604800"=Past Week, "r2592000"=Past Month
     JOB_REMOTE_FILTER: str    = "2" # 1=On-site, 2=Remote, 3=Hybrid
+    # Extra native job facets used by the dashboard (empty = no filter)
+    JOB_TYPES: List[str] = field(default_factory=lambda: [])  # F,C,P,T,I
+    JOB_EASY_APPLY: bool = False
 
     # ─────────────────────────────────────────────
     #  SMART RESUME MATCH & STRICT TIME FILTER (Option 4)

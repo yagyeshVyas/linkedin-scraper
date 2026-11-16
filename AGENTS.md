@@ -91,7 +91,7 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   boolean/number column (open_to_work, follower_count, connection_count) throws.
 - Behavioral tests: `test_scraper_fixes.py` (33 tests), `test_login_flow.py` (5 tests),
   `test_power_features.py` (58 tests), `test_cf_agent.py` (46 tests), `test_brutal.py`
-  (54 tests) and `test_webapp.py` (20 tests) — run each with `.venv/Scripts/python.exe <file>`
+  (54 tests) and `test_webapp.py` (21 tests) — run each with `.venv/Scripts/python.exe <file>`
   (no browser or network needed; the login suite drives the real `login()` against fakes, the
   dashboard suite binds an ephemeral loopback port). No pytest in the venv — each file is a
   plain script with a `__main__` runner list; add new tests to that list.
@@ -258,9 +258,17 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   non-report suffixes — keep that guard.
 - UI contract used by the tests: tab buttons are `data-view="..."`, panels are
   `#view-<name>`, and these ids exist: `recordsTable`, `runsTable`, `recentTable`,
-  `btnAudit`, `btnProxy`, `gauge`, `console`, `fullLog`. JS polls status every 3.2s and the
-  log every 1.6s while a run is active.
-- `test_webapp.py` (20 tests) boots the real handler on an ephemeral loopback port, so it
+  `btnAudit`, `btnProxy`, `gauge`, `console`, `fullLog`. The Run view has a mode switch
+  (`#modeSwitch .mode-btn[data-mode]`) and three panels (`.mode-panel[data-panel]`) —
+  People (`pCompanies`, `pTitles`, `pNetwork`, `pSeniority`, advanced IDs), Jobs
+  (`jKeywords`, `jDate`, `jLevel`, `jWorkplace`, `jTypes`, `jEasy`, `jPages`) and
+  Candidates (`cSkills`, `cTitle`, `cPages`). `runPayload()` reads only the active panel.
+  JS polls status every 3.2s and the log every 1.6s while a run is active.
+- `cli.py run` gained the facets the panels send: `--title-filter`, `--date-posted`,
+  `--experience-levels`, `--workplace`, `--job-types`, `--easy-apply`, `--max-pages`,
+  `--max-candidate-pages` (mapped onto config; `JOB_TYPES`/`JOB_EASY_APPLY` added to
+  config and passed by `_build_job_filters`).
+- `test_webapp.py` (21 tests) boots the real handler on an ephemeral loopback port, so it
   covers HTTP without a browser. Run all SIX suites before claiming a change works.
 
 

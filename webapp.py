@@ -330,6 +330,33 @@ def build_run_args(payload: Dict[str, Any]) -> List[str]:
     max_profiles = _clean_int(payload.get("max_profiles"), 0, 0, 10000)
     if max_profiles:
         args += ["--max-profiles", str(max_profiles)]
+
+    # Mode-specific facets. Values are validated/clamped downstream by the CLI
+    # and the URL builders; here we only keep them bounded.
+    for flag, key, max_length in (
+        ("--network", "network", 20),
+        ("--seniority", "seniority", 60),
+        ("--current-company-ids", "current_company_ids", 200),
+        ("--past-company-ids", "past_company_ids", 200),
+        ("--school-ids", "school_ids", 200),
+        ("--industry-ids", "industry_ids", 200),
+        ("--title-filter", "title_filter", 120),
+        ("--date-posted", "date_posted", 20),
+        ("--experience-levels", "experience_levels", 40),
+        ("--workplace", "workplace", 4),
+        ("--job-types", "job_types", 40),
+    ):
+        value = str(payload.get(key) or "").strip()[:max_length]
+        if value:
+            args += [flag, value]
+    if payload.get("easy_apply"):
+        args.append("--easy-apply")
+    for flag, key in (("--max-pages", "max_pages"),
+                      ("--max-candidate-pages", "max_candidate_pages")):
+        value = _clean_int(payload.get(key), 0, 0, 100)
+        if value:
+            args += [flag, str(value)]
+
     formats = ",".join(fmt for fmt in str(payload.get("formats") or "").split(",")
                        if fmt.strip() in EXPORT_FORMATS)
     if formats:

@@ -184,8 +184,8 @@ is one HTML file with no build step. Five tabs:
 
 | Tab | What it does |
 | --- | --- |
-| **Overview** | live cards (profiles, emails, runs, stealth score), recent runs, latest profiles, session telemetry, engine status |
-| **Run** | start/stop a scrape with mode, companies, titles, limit, formats, headless/dry-run, then watch the log stream live |
+| **Overview** | live cards (profiles, emails, runs, stealth score), three search-mode cards, recent runs, latest profiles, session telemetry, engine status |
+| **Run** | three dedicated panels — **People** (companies, titles, network, seniority, advanced ID facets), **Jobs** (keywords, recency, level, workplace, contract type, easy-apply, pages), **Candidates** (skills, title filter, pages) — plus shared limits/formats and a live log stream |
 | **Records** | search the stored pool, open any profile in a side sheet with every field |
 | **Armor** | run the stealth audit with a 0-100 gauge and pass/fail findings; scan and rank the proxy pool |
 | **Logs** | the full run trail, downloadable |
@@ -241,7 +241,7 @@ linkedin-scraper/
 ├── test_power_features.py     ← 58 tests for the v5.0 stack (no browser needed)
 ├── test_cf_agent.py           ← 46 tests for the v6.0 stealth + agent browser
 ├── test_brutal.py             ← 54 tests for the armor (fingerprints, proxies, audit)
-├── test_webapp.py             ← 20 tests for the dashboard API and page
+├── test_webapp.py             ← 21 tests for the dashboard API and page
 ├── start.bat                  ← one-click: bootstrap + open the dashboard
 │
 ├── output/                    ← Auto-created on first run

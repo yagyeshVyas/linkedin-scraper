@@ -10,10 +10,13 @@ from typing import Optional
 from playwright.async_api import Page, BrowserContext
 from bs4 import BeautifulSoup
 
-from behavior import human_mouse_move, idle_jitter, warm_up
+from behavior import human_mouse_move, idle_jitter, warm_up, Humanizer
 from cf_bypass import (block_reason_for, classify_page, launch_stealth_browser,
                        solve_challenge)
 from config import Config
+from fingerprint import (country_from_proxy, detect_country, generate_profile,
+                         host_os, strip_proxy_tag, summary as fingerprint_summary)
+from proxy_intel import ProxyIntel
 from enrichment import enrich_record
 from scoring import keyword_weights, read_resume_text, score_record
 from search_filters import (JobFilters, PeopleFilters, build_jobs_search_url,
@@ -168,6 +171,16 @@ class LinkedInScraper:
         # Proxy rotation state (see _next_proxy).
         self.current_proxy = None
         self._proxy_cursor = random.randrange(max(1, len(config.PROXY_LIST)))
+        # Country inferred from a "#CC" proxy tag — the fingerprint must match it.
+        self._proxy_country = ""
+        # Per-proxy health memory: cooldowns, blocks, latency, country.
+        self.proxy_intel = ProxyIntel(
+            path=getattr(config, "PROXY_INTEL_FILE", "output/proxy_intel.json"),
+            cooldown=getattr(config, "PROXY_COOLDOWN_SECONDS", 300),
+            enabled=getattr(config, "PROXY_INTEL_ENABLED", True),
+        )
+        # Human pacing for typing/clicking/reading (level from config).
+        self.humanizer = Humanizer(level=getattr(config, "HUMANIZE_LEVEL", 2))
         # Lazy ProxyManager for USE_FREE_PROXIES mode (auto-fetched free proxies).
         self.proxy_manager = None
         # Session-health telemetry. Persisted LIVE on every meaningful event
@@ -221,10 +234,17 @@ class LinkedInScraper:
         # direct connection once instead of dying.
         engine = getattr(self.config, "BROWSER_ENGINE", "auto")
         channel = getattr(self.config, "BROWSER_CHANNEL", "")
+        # Armor + a scriptable engine is the coherent combination: the injected
+        # fingerprint actually runs, so the audit can score 100. Flip
+        # PREFER_SCRIPTABLE_ENGINE off to put patchright first for CF work.
+        fingerprint_mode = str(getattr(self.config, "FINGERPRINT_ENGINE", "generator")).lower()
+        prefer_scriptable = (bool(getattr(self.config, "PREFER_SCRIPTABLE_ENGINE", True))
+                             and fingerprint_mode == "generator")
         try:
             self.engine_handle = await launch_stealth_browser(
                 engine=engine, headless=self.config.HEADLESS,
                 proxy=proxy_dict, channel=channel,
+                prefer_scriptable=prefer_scriptable,
             )
         except Exception as e:
             if proxy_dict:
@@ -234,6 +254,7 @@ class LinkedInScraper:
                 self.engine_handle = await launch_stealth_browser(
                     engine=engine, headless=self.config.HEADLESS,
                     proxy=None, channel=channel,
+                    prefer_scriptable=prefer_scriptable,
                 )
             else:
                 raise
@@ -241,18 +262,42 @@ class LinkedInScraper:
         self.browser = self.engine_handle.browser
         logger.info(f"🌐 Engine: {self.engine_handle.engine}")
 
-        # Coherent fingerprint selection — either a fixed profile per launch
-        # (consistent UA/platform/GPU/viewport/timezone) or randomized each
-        # launch when RANDOMIZE_FINGERPRINT is on. The viewport is read
-        # defensively so a hand-edited profile missing the key degrades to
-        # 1920x1080 instead of crashing the launch.
-        if self.config.RANDOMIZE_FINGERPRINT:
-            fp = random.choice(_FINGERPRINTS)
+        # Fingerprint: a freshly generated coherent identity (default) or one of
+        # the four hand-written profiles. When the live proxy carries a "#CC"
+        # country tag, the generated identity comes from that country, so the
+        # timezone/locale/geo never contradict the exit IP.
+        mode = str(getattr(self.config, "FINGERPRINT_ENGINE", "generator")).lower()
+        if mode == "generator":
+            seed = getattr(self.config, "FINGERPRINT_SEED", 0) or None
+            # The UA must name the build that is actually running.
+            try:
+                version = str(getattr(self.browser, "version", "") or "")
+                actual_major = int(version.split(".")[0])
+            except (TypeError, ValueError):
+                actual_major = 0
+            # patchright ignores add_init_script, so it cannot wear a random OS
+            # or a viewport larger than the real screen. Keep geography, wear
+            # the host, fit the screen.
+            scriptable = bool(getattr(self.engine_handle, "scriptable", False))
+            country = detect_country(
+                self._proxy_country,
+                getattr(self.config, "FINGERPRINT_COUNTRY", "") or "",
+            )
+            fp = generate_profile(
+                seed=seed,
+                country=country,
+                chrome_major=actual_major or None,
+                os_name=None if scriptable else host_os(),
+                safe_viewport=not scriptable,
+            )
+            logger.info(f"🧬 Fingerprint: {fingerprint_summary(fp)}")
         else:
-            fp = _FINGERPRINTS[0]
+            fp = (random.choice(_FINGERPRINTS) if self.config.RANDOMIZE_FINGERPRINT
+                  else _FINGERPRINTS[0])
+            logger.info(f"🕵️  Fingerprint: {fp['platform']} · "
+                        f"{fp['viewport'][0]}x{fp['viewport'][1]} · {fp['timezone_id']}")
         user_agent = fp["user_agent"]
         viewport = fp.get("viewport", (1920, 1080))
-        logger.info(f"🕵️  Fingerprint: {fp['platform']} · {viewport[0]}x{viewport[1]} · {fp['timezone_id']}")
 
         # Reuse a persisted login session if one exists — the fastest and least
         # detectable path (no typing, no 2FA on subsequent runs).
@@ -285,6 +330,9 @@ class LinkedInScraper:
         await self.context.add_init_script(f"""
             // --- navigator.webdriver must disappear -------------------------
             Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+
+            // --- navigator.platform must agree with the UA -----------------
+            Object.defineProperty(navigator, 'platform', {{ get: () => '{fp['platform']}' }});
 
             // --- window.chrome must exist in a Chromium browser --------------
             if (!window.chrome) {{
@@ -367,6 +415,7 @@ class LinkedInScraper:
                             {{ brand: 'Google Chrome', version: BRAND_VERSION }},
                         ],
                         mobile: false,
+                        platform: UA_PLATFORM,
                         platforms: [UA_PLATFORM],
                         getHighEntropyValues: async (hints) => ({{
                             architecture: 'x86',
@@ -403,6 +452,34 @@ class LinkedInScraper:
         )
 
         logger.info("✅ Browser launched successfully.")
+
+    async def _audit_stealth(self) -> dict:
+        """Measure the live browser once after login and record the score.
+
+        The point is honesty: whichever engine won the ladder, the run knows
+        what it actually looks like and names the checks that failed.
+        """
+        if not getattr(self.config, "STEALTH_AUDIT_ON_LAUNCH", True):
+            return {}
+        try:
+            from stealth_audit import audit_page
+            result = await audit_page(self.page)
+        except Exception as exc:
+            logger.debug("stealth audit failed: %s", exc)
+            return {}
+        score = int(result.get("score") or 0)
+        grade = str(result.get("grade") or "?")
+        engine = self.engine_handle.engine if self.engine_handle else "?"
+        self.telemetry["stealth_score"] = score
+        self.telemetry["stealth_grade"] = grade
+        logger.info(f"🧪 Stealth audit: {score}/100 (grade {grade}) on {engine}")
+        failed = [item["id"] for item in result.get("findings") or [] if not item["ok"]]
+        minimum = int(getattr(self.config, "STEALTH_AUDIT_MIN_SCORE", 70))
+        if score < minimum and failed:
+            logger.warning(f"   below target {minimum}: {', '.join(failed)}"
+                           f"{' (engine cannot inject scripts)' if not getattr(self.engine_handle, 'scriptable', False) else ''}")
+        self._telemetry_event("audit", f"{score}/100 {grade}")
+        return result
 
     async def _shutdown_browser(self):
         """Close context, browser, engine driver — every step independently guarded.
@@ -472,34 +549,57 @@ class LinkedInScraper:
             logger.error(f"❌ Re-login after rotation errored ({e.__class__.__name__}: {e}).")
             return False
 
+        if self.current_proxy:
+            self.proxy_intel.mark_ok(self.current_proxy)
         return True
 
     def _next_proxy(self):
         """
         Pick the next proxy for a launch/rotation. Source priority:
-          1. config.PROXY_LIST — round-robin, never the same proxy twice in a row
-             (so identity rotation actually changes IPs).
+          1. config.PROXY_LIST — through ProxyIntel when enabled (skip cooling /
+             dead proxies, prefer the requested country), falling back to the
+             classic round-robin that never repeats the current proxy.
           2. ProxyManager free-proxy pool (USE_FREE_PROXIES, PROXY_LIST empty).
         Returns None to use a direct connection.
         """
-        proxies = self.config.PROXY_LIST
+        proxies = list(self.config.PROXY_LIST or [])
         if proxies:
-            if len(proxies) > 1:
-                for _ in range(len(proxies)):
-                    candidate = proxies[self._proxy_cursor % len(proxies)]
-                    self._proxy_cursor = (self._proxy_cursor + 1) % len(proxies)
+            clean = [strip_proxy_tag(url) for url in proxies]
+            if self.proxy_intel.enabled:
+                self.proxy_intel.register(proxies)
+                picked, self._proxy_cursor = self.proxy_intel.pick(
+                    clean, exclude=self.current_proxy, cursor=self._proxy_cursor)
+                if picked:
+                    self._remember_proxy(picked, proxies)
+                    return picked
+            # Intel off, or every proxy cooling: deterministic round-robin.
+            if len(clean) > 1:
+                for _ in range(len(clean)):
+                    candidate = clean[self._proxy_cursor % len(clean)]
+                    self._proxy_cursor = (self._proxy_cursor + 1) % len(clean)
                     if candidate != self.current_proxy:
-                        self.current_proxy = candidate
+                        self._remember_proxy(candidate, proxies)
                         return candidate
-            self.current_proxy = proxies[self._proxy_cursor % len(proxies)]
+            self._remember_proxy(clean[self._proxy_cursor % len(clean)], proxies)
             return self.current_proxy
         if self.config.USE_FREE_PROXIES and self.proxy_manager is not None:
             proxy = self.proxy_manager.get_proxy()
             if proxy:
                 self.current_proxy = proxy
+                self._proxy_country = country_from_proxy(proxy)
                 return proxy
         self.current_proxy = None
+        self._proxy_country = ""
         return None
+
+    def _remember_proxy(self, url: str, originals) -> None:
+        """Store the clean proxy URL plus the country tag of its source entry."""
+        self.current_proxy = url
+        self._proxy_country = ""
+        for original in originals:
+            if strip_proxy_tag(original) == url:
+                self._proxy_country = country_from_proxy(original)
+                break
 
     async def _ensure_free_proxies(self):
         """Fetch and test a pool of free proxies when PROXY_LIST is empty and
@@ -536,6 +636,8 @@ class LinkedInScraper:
                 # removed from the free-proxy pool so the list refills.
                 if self.proxy_manager is not None and self.current_proxy:
                     self.proxy_manager.mark_failed(self.current_proxy)
+                if self.current_proxy:
+                    self.proxy_intel.mark_failed(self.current_proxy)
                     self.current_proxy = None
                 rotated = await self._rotate_identity()
             
@@ -681,6 +783,8 @@ class LinkedInScraper:
         await human_delay(wait * 0.9, wait * 1.1)
 
         try:
+            if self.current_proxy:
+                self.proxy_intel.mark_block(self.current_proxy)
             rotated = await self._rotate_identity()
         except Exception as e:
             logger.error(f"❌ Identity rotation failed ({e.__class__.__name__}: {e}) — stopping.")
@@ -2096,6 +2200,7 @@ class LinkedInScraper:
             if not await self.login():
                 logger.error("❌ Login failed — dry run aborted.")
                 return False
+            await self._audit_stealth()
 
             if mode == "jobs":
                 keyword = input_list[0] if input_list else "python"
@@ -2570,6 +2675,7 @@ class LinkedInScraper:
                 logger.error("Login failed. Exiting.")
                 self._stop_reason = "login failed"
                 return None
+            await self._audit_stealth()
 
             await self._after_login()
             total = len(input_list)

@@ -3,4 +3,7 @@
 # runtime state — bot-wall cookies, agent-browser profiles, screenshots
 output/clearance.json
 output/agent_screenshots/
+output/agent_downloads/
+output/proxy_intel.json
+output/_intel_brutal.json
 session/agent_browser/

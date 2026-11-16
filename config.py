@@ -300,6 +300,34 @@ class Config:
     # Where the agent browser keeps its login state between MCP sessions.
     AGENT_BROWSER_STATE_DIR: str = "session/agent_browser"
 
+    # ─────────────────────────────────────────────
+    #  🧬 FINGERPRINT ARMOR + PROXY INTELLIGENCE (v7.0)
+    # ─────────────────────────────────────────────
+    # "generator" builds a fresh coherent identity per launch (see
+    # fingerprint.py); "static" uses the four hand-written _FINGERPRINTS.
+    FINGERPRINT_ENGINE: str = "generator"
+    FINGERPRINT_SEED: int = 0            # 0 = random per launch
+    # Country for the generated identity when no proxy carries a "#CC" tag.
+    # Empty = infer from the system timezone/locale (never a random country).
+    FINGERPRINT_COUNTRY: str = ""
+    # With armor on, prefer the engine that actually honours injected scripts
+    # (Playwright). Set False to put patchright first for Cloudflare-heavy work;
+    # the fingerprint then constrains itself to the host OS.
+    PREFER_SCRIPTABLE_ENGINE: bool = True
+
+    # Per-proxy health, cooldown and country memory (output/proxy_intel.json).
+    # Tag a proxy with a country: "http://user:pass@host:8080#DE".
+    PROXY_INTEL_ENABLED: bool = True
+    PROXY_INTEL_FILE: str = "output/proxy_intel.json"
+    PROXY_COOLDOWN_SECONDS: int = 300
+
+    # 0 = off, 1 = light, 2 = normal, 3 = slow. Drives Humanizer timings.
+    HUMANIZE_LEVEL: int = 2
+    # Warn (not stop) when a stealth audit scores below this.
+    STEALTH_AUDIT_MIN_SCORE: int = 70
+    # Run one audit after login and record the score in session telemetry.
+    STEALTH_AUDIT_ON_LAUNCH: bool = True
+
     
     # Deep Scraping Features
     SCRAPE_WORK_EXPERIENCE: bool = True

@@ -103,11 +103,12 @@ python cli.py report --out output/report.html
 
 ---
 
-## 🧱 Stealth Stack (v6.0) — Cloudflare + agent browser
+## 🧱 Stealth Stack (v7.0) — armor, audit, agent browser
 
 The scraper is no longer "a Playwright script that hopes". Every page is
-classified, every wall has a ladder to climb, and the browser itself is now a
-first-class tool an AI agent can drive.
+classified, every wall has a ladder to climb, every identity is generated to
+agree with itself, and the browser itself is a first-class tool an AI agent can
+drive.
 
 | Capability | What it does | Module |
 | --- | --- | --- |
@@ -115,8 +116,12 @@ first-class tool an AI agent can drive.
 | **Wall classifier** | names Cloudflare / Turnstile / DataDome / PerimeterX / Imperva / Akamai / rate-limit / authwall pages instead of guessing from one phrase | `cf_bypass.py` |
 | **Clearance cache** | stores `cf_clearance` / `__cf_bm` / Datadome cookies per domain **and per proxy IP and UA**, because a clearance bound to another IP is a flag, not a token | `cf_bypass.py` |
 | **Engine ladder** | patchright (deep-patched Chrome) → camoufox (spoofed Firefox) → stock Playwright, per-engine fallback, one teardown path | `cf_bypass.launch_stealth_browser` |
-| **Agent browser** | accessibility snapshots with `[ref=eN]` handles: navigate, click, type, press, scroll, select, hover, wait, extract text, screenshot, cookies, evaluate | `agent_browser.py` |
-| **MCP browser** | 17 tools over stdio so Claude Desktop / Cursor / any MCP client drives the browser | `agent_browser.py` |
+| **Fingerprint armor** | generated identity where UA, platform, UA-CH, GPU, screen, timezone and locale all tell one story — and a host-OS identity when the engine can't inject scripts | `fingerprint.py` |
+| **Stealth audit** | scores the live browser 0-100 across 12 checks (webdriver, plugins, WebGL, UA-CH, timezone, CDP leaks) instead of assuming the patches work | `stealth_audit.py` |
+| **Proxy intelligence** | per-proxy health, latency, cooldowns and country; skips cooling/banned proxies and matches the fingerprint to the exit country | `proxy_intel.py` |
+| **Humanizer** | per-key timing, typos with backspace, curved clicks, reading scrolls, time-of-day rhythm | `behavior.py` |
+| **Agent browser** | accessibility snapshots with `[ref=eN]` handles: navigate, click, type, press, scroll, select, hover, wait, extract, screenshot, tabs, console, network, dialogs, upload, download, form fill, cookies, evaluate, audit | `agent_browser.py` |
+| **MCP browser** | 25 tools over stdio so Claude Desktop / Cursor / any MCP client drives the browser | `agent_browser.py` |
 | **Function-calling specs** | `TOOL_SPECS` + `dispatch()` for agents that don't speak MCP | `agent_browser.py` |
 
 ```bash
@@ -129,9 +134,16 @@ camoufox fetch                    # optional, strongest fingerprint spoof
 # fetch through the ladder, no browser launch
 python cli.py fetch https://example.com --json
 
+# prove the browser: score it
+python cli.py stealth-check --all
+python cli.py stealth-check --engine patchright --headed --all
+
+# test and rank your proxy pool
+python cli.py proxy-scan
+
 # drive the agent browser
 python cli.py browser --url https://example.com --snapshot
-python cli.py browser --url https://example.com --extract --json
+python cli.py browser --url https://example.com --audit --extract --json
 
 # expose the browser to any MCP client
 python cli.py mcp-browser --headless
@@ -184,6 +196,9 @@ linkedin-scraper/
 ├── exporters.py               ← CSV / JSON / JSONL / Markdown / HTML report
 ├── behavior.py                ← Human pointer paths, wheel scrolling, warm-up
 ├── cf_bypass.py               ← CF/bot-wall classifier, tiered fetch, clearance cache, engines
+├── fingerprint.py             ← coherent fingerprint generator + validator + init script
+├── stealth_audit.py           ← live anti-detection probe and 0-100 score
+├── proxy_intel.py             ← per-proxy health, cooldown, latency, country scoreboard
 ├── agent_browser.py           ← Agent-native browser (a11y refs) + MCP server
 ├── mcp_server.py              ← Dependency-free MCP server (stdio) over the database
 ├── POWER_STACK.md             ← Full guide to the v5.0 features
@@ -196,6 +211,7 @@ linkedin-scraper/
 ├── test_login_flow.py         ← Drives the real login() against fakes
 ├── test_power_features.py     ← 58 tests for the v5.0 stack (no browser needed)
 ├── test_cf_agent.py           ← 46 tests for the v6.0 stealth + agent browser
+├── test_brutal.py             ← 53 tests for the v7.0 armor (fingerprints, proxies, audit)
 │
 ├── output/                    ← Auto-created on first run
 │   ├── linkedin_results.xlsx  ← Your exported Excel data

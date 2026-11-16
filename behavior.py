@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+from datetime import datetime
 from typing import Optional
 
 
@@ -134,3 +135,160 @@ async def warm_up(page, *, home: str = "https://www.linkedin.com/feed/",
         return True
     except Exception:
         return False
+
+
+# ─────────────────────────────────────────────────────────────
+#  Humanizer — a per-action rhythm, not just one-off helpers
+# ─────────────────────────────────────────────────────────────
+
+class Humanizer:
+    """Typing, clicking, reading and session rhythm with injectable randomness.
+
+    ``level`` scales every pause: 0 is a fast test mode (no pauses beyond a
+    token sleep), 3 is deliberately slow. ``rng`` and ``sleep`` are injectable
+    so tests run instantly and deterministically.
+
+    The point is not "look random" in aggregate — statistical detectors check
+    per-event distributions: key hold times, inter-key intervals, mouse path
+    curvature and the pause before a submit. Each of those has its own shape
+    here.
+    """
+
+    def __init__(self, level: int = 2, *, rng: Optional[random.Random] = None,
+                 sleep=None):
+        self.level = max(0, min(3, int(level)))
+        self.rng = rng or random.Random()
+        self._sleep = sleep or asyncio.sleep
+
+    # ── timing ──
+
+    def _scale(self, value: float) -> float:
+        return value * (0.0 if self.level == 0 else 0.55 if self.level == 1
+                        else 1.0 if self.level == 2 else 1.8)
+
+    async def pause(self, low: float = 0.15, high: float = 0.6) -> None:
+        await self._sleep(self._scale(self.rng.uniform(max(0.0, low), max(low, high))))
+
+    def key_delay(self, char: str) -> float:
+        """Inter-key interval, shaped by what is being typed."""
+        base = self.rng.gauss(0.085, 0.028)
+        if char == " ":
+            base += self.rng.uniform(0.01, 0.05)
+        elif char in ",.;:!?":
+            base += self.rng.uniform(0.05, 0.16)
+        elif char.isupper():
+            base += self.rng.uniform(0.01, 0.04)
+        return self._scale(max(0.02, min(0.42, base)))
+
+    @staticmethod
+    def session_rhythm(hour: Optional[int] = None) -> float:
+        """Delay multiplier for the local hour — people are not uniform."""
+        hour = (hour if hour is not None else datetime.now().hour)
+        if 0 <= hour < 6:
+            return 1.6
+        if 6 <= hour < 9:
+            return 1.15
+        if 9 <= hour < 18:
+            return 1.0
+        if 18 <= hour < 23:
+            return 0.9
+        return 1.3
+
+    # ── typing ──
+
+    async def type_text(self, locator, text: str, *, page=None, submit: bool = False,
+                        clear: bool = True, typo_rate: Optional[float] = None) -> dict:
+        """Type ``text`` into a locator like a person would.
+
+        Returns ``{"chars", "typos", "submitted"}`` so callers (and tests) can
+        assert what actually hit the keyboard.
+        """
+        text = str(text or "")
+        keyboard = getattr(page, "keyboard", None)
+        if keyboard is None:
+            raise RuntimeError("Humanizer.type_text needs a page with a keyboard")
+        try:
+            await locator.focus()
+        except Exception:
+            pass
+        if clear:
+            try:
+                await locator.fill("")
+            except Exception:
+                try:
+                    await locator.press("Control+A")
+                    await locator.press("Backspace")
+                except Exception:
+                    pass
+
+        rate = (0.015 if self.level >= 2 else 0.0) if typo_rate is None else float(typo_rate)
+        typos = 0
+        for char in text:
+            if rate and char.isalpha() and self.rng.random() < rate:
+                typos += 1
+                wrong = self.rng.choice("abcdefghijklmnopqrstuvwxyz")
+                await keyboard.type(wrong)
+                await self._sleep(self._scale(self.rng.uniform(0.12, 0.35)))
+                await keyboard.press("Backspace")
+                await self._sleep(self._scale(self.rng.uniform(0.04, 0.12)))
+            await keyboard.type(char)
+            await self._sleep(self.key_delay(char))
+            if char in ".!?" and self.rng.random() < 0.35:
+                await self.pause(0.25, 0.8)
+        if submit:
+            await self.pause(0.2, 0.5)
+            await keyboard.press("Enter")
+        return {"chars": len(text), "typos": typos, "submitted": bool(submit)}
+
+    # ── pointing ──
+
+    async def click(self, locator, page, *, button: str = "left") -> bool:
+        """Move to a random point inside the target, then click."""
+        try:
+            box = await locator.bounding_box()
+        except Exception:
+            box = None
+        if not box or not box.get("width"):
+            try:
+                await locator.click(button=button)
+                return True
+            except Exception:
+                return False
+        x = box["x"] + box["width"] * self.rng.uniform(0.3, 0.7)
+        y = box["y"] + box["height"] * self.rng.uniform(0.3, 0.7)
+        try:
+            await page.mouse.move(x - self.rng.uniform(25, 70),
+                                  y - self.rng.uniform(15, 45), steps=self.rng.randint(6, 14))
+            await self.pause(0.05, 0.18)
+            await page.mouse.click(x, y, button=button)
+            return True
+        except Exception:
+            try:
+                await locator.click(button=button)
+                return True
+            except Exception:
+                return False
+
+    # ── reading ──
+
+    async def read(self, page, seconds: Optional[float] = None) -> None:
+        """Scroll, pause, scroll back a little — the shape of reading."""
+        budget = float(seconds if seconds is not None else self.rng.uniform(2.5, 7.0))
+        steps = max(1, int(budget / 1.2))
+        for _ in range(steps):
+            distance = self.rng.randint(140, 420)
+            try:
+                await page.mouse.wheel(0, distance)
+            except Exception:
+                try:
+                    await page.evaluate("(dy) => window.scrollBy(0, dy)", distance)
+                except Exception:
+                    pass
+            await self._sleep(self._scale(self.rng.uniform(0.5, 1.4)))
+        if self.rng.random() < 0.4:
+            try:
+                await page.mouse.wheel(0, -self.rng.randint(40, 140))
+            except Exception:
+                pass
+        await self.pause(0.3, 0.9)
+

@@ -893,13 +893,21 @@ _ENGINE_ORDER = ("patchright", "camoufox", "playwright")
 
 
 class BrowserHandle:
-    """One launched engine: browser + whatever object must be torn down with it."""
+    """One launched engine: browser + whatever object must be torn down with it.
 
-    def __init__(self, engine: str, browser, driver=None, cm=None):
+    ``scriptable`` is the engine's honest capability: stock Playwright honours
+    ``add_init_script``; patchright ignores it entirely (its own patches live
+    below the JS layer). Callers that need injected coherence must check it —
+    otherwise a generated fingerprint can contradict the real binary.
+    """
+
+    def __init__(self, engine: str, browser, driver=None, cm=None,
+                 scriptable: bool = False):
         self.engine = engine
         self.browser = browser
         self.driver = driver
         self._cm = cm
+        self.scriptable = bool(scriptable)
         self._closed = False
 
     async def close(self) -> None:
@@ -942,18 +950,26 @@ def available_engines() -> List[str]:
 async def launch_stealth_browser(engine: str = "auto", *, headless: bool = False,
                                  proxy: Optional[dict] = None, channel: str = "",
                                  args: Optional[List[str]] = None,
-                                 user_data_dir: str = "") -> BrowserHandle:
+                                 user_data_dir: str = "",
+                                 prefer_scriptable: bool = False) -> BrowserHandle:
     """Launch the best available stealth engine, in order, with fallbacks.
 
     ``engine`` may be an explicit name or ``"auto"``.  Every attempt is isolated:
     a missing browser build, a broken proxy or an import error moves to the next
     engine instead of killing the run.  Raises only when no engine launches.
+
+    ``prefer_scriptable`` puts stock Playwright first: its ``add_init_script``
+    actually runs, which is required for a generated fingerprint to be true.
+    Leave it off when the priority is Cloudflare (patchright's native patches).
     """
     order = list(_ENGINE_ORDER) if str(engine).lower() in ("", "auto") else [str(engine).lower()]
     if str(engine).lower() not in ("", "auto") and order[0] not in _ENGINE_ORDER:
         raise ValueError(f"unknown browser engine: {engine!r}")
     if str(engine).lower() in ("", "auto"):
         order = [item for item in order if _module_available(item)]
+        if prefer_scriptable and "playwright" in order:
+            order.remove("playwright")
+            order.insert(0, "playwright")
     if not order:
         raise RuntimeError("no browser engine available (install playwright/patchright/camoufox)")
 
@@ -989,7 +1005,8 @@ async def _launch_playwright_like(module_name: str, headless: bool, proxy: Optio
             context = await driver.chromium.launch_persistent_context(
                 user_data_dir, headless=headless, proxy=proxy, args=launch_args)
             browser = context.browser
-            handle = BrowserHandle(module_name, browser, driver)
+            handle = BrowserHandle(module_name, browser, driver,
+                                   scriptable=(module_name == "playwright"))
             handle.context = context  # type: ignore[attr-defined]
             return handle
         attempts = [{"channel": channel}] if channel else []
@@ -999,7 +1016,8 @@ async def _launch_playwright_like(module_name: str, headless: bool, proxy: Optio
             try:
                 browser = await driver.chromium.launch(
                     headless=headless, proxy=proxy, args=launch_args, **extra)
-                return BrowserHandle(module_name, browser, driver)
+                return BrowserHandle(module_name, browser, driver,
+                                     scriptable=(module_name == "playwright"))
             except Exception as exc:
                 last_error = exc
         raise last_error or RuntimeError("launch failed")
@@ -1020,13 +1038,13 @@ async def _launch_camoufox(headless: bool, proxy: Optional[dict], launch_args: L
     try:
         cm = AsyncCamoufox(**kwargs)
         browser = await cm.__aenter__()
-        return BrowserHandle("camoufox", browser, None, cm)
+        return BrowserHandle("camoufox", browser, None, cm, scriptable=False)
     except TypeError:
         # Older builds take the proxy as a plain URL string.
         if proxy and proxy.get("server"):
             cm = AsyncCamoufox(headless=headless, proxy=proxy["server"])
             browser = await cm.__aenter__()
-            return BrowserHandle("camoufox", browser, None, cm)
+            return BrowserHandle("camoufox", browser, None, cm, scriptable=False)
         raise
 
 

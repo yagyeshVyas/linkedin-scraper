@@ -81,10 +81,10 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 - The dashboard table's sort coerces with `String(a[key] ?? "")`; without that, sorting any
   boolean/number column (open_to_work, follower_count, connection_count) throws.
 - Behavioral tests: `test_scraper_fixes.py` (33 tests), `test_login_flow.py` (5 tests),
-  `test_power_features.py` (58 tests) and `test_cf_agent.py` (46 tests) — run each with
-  `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite drives the
-  real `login()` against fakes). No pytest in the venv — each file is a plain script with a
-  `__main__` runner list; add new tests to that list.
+  `test_power_features.py` (58 tests), `test_cf_agent.py` (46 tests) and `test_brutal.py`
+  (53 tests) — run each with `.venv/Scripts/python.exe <file>` (no browser or network needed;
+  the login suite drives the real `login()` against fakes). No pytest in the venv — each file
+  is a plain script with a `__main__` runner list; add new tests to that list.
 
 ## Power stack (v5.0, 2026-11)
 
@@ -173,10 +173,58 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   protocol-only — log to stderr.
 - `test_cf_agent.py` (46 tests) is the fourth suite: classifier cases, cache scoping/TTL,
   TLS targets, FlareSolverr, fetch-ladder order, snapshot format/staleness, MCP dispatch,
-  scraper block classification. Run all FOUR suites.
+  scraper block classification. Run every suite before claiming a change works.
 - Windows console: `agent_browser.main` and `cli.main` reconfigure stdout/stderr to UTF-8
   with `errors="replace"` — page text is arbitrary Unicode and cp1252 would crash a snapshot
   print. Keep that at CLI entry points only; library code must not touch global streams.
+
+
+## Armor (v7.0, 2026-11)
+
+- New modules, stdlib-only and import-safe: `fingerprint.py` (coherent profiles,
+  `validate_profile`, `init_script`), `stealth_audit.py` (12-check live probe, 0-100 score),
+  `proxy_intel.py` (health/cooldown/country scoreboard). `behavior.py` gained `Humanizer`.
+  `cli.py` gained `stealth-check` and `proxy-scan`; `doctor` reports armor checks.
+- **Measured engine behaviour, do not "fix" by assumption:** patchright silently ignores
+  `context.add_init_script` and `page.add_init_script` (both bundled Chromium and
+  `channel="chrome"`); stock Playwright honours them; `Page.addScriptToEvaluateOnNewDocument`
+  via CDP did not inject in either engine in this environment. `BrowserHandle.scriptable`
+  records the capability. Anything that depends on injected JS must check it.
+- Consequence: with a non-scriptable engine the fingerprint is constrained to
+  `fingerprint.host_os()` (geography preserved, OS truthful), a 1366x768 safe viewport, and
+  the audit drops un-fakeable expectations. `agent_browser.BrowserSession` passes
+  `prefer_scriptable=self.armor`. `linkedin_scraper` does the same by default through
+  `PREFER_SCRIPTABLE_ENGINE=True` (so the production path audits **100 A**); set it False to
+  put patchright first for Cloudflare-heavy targets.
+- Coherence fixes measured in production: the scraper script had **no**
+  `navigator.platform` patch and **no singular** `navigator.userAgentData.platform` (only
+  `platforms`), which made every generated non-Windows identity fail audit. Both are now
+  patched; `test_brutal` guards the source. The UA major is pinned to the real
+  `browser.version` after launch, `detect_country()` picks local country when no proxy tag
+  exists, and `_audit_stealth()` runs once after login and writes `stealth_score`/
+  `stealth_grade` into telemetry.
+- Audit ground truth on this machine: Playwright + armor (scraper and agent) = 100 A;
+  patchright headed = 86 B (strips `navigator.userAgentData`, iframe `webdriver=false`);
+  patchright headless = 61 C (SwiftShader, no plugins/chrome runtime). Keep `HEADLESS=False`
+  for real runs.
+- `stealth_audit` weights live in one table and must sum to 128. Timezone compares through
+  `_ZONE_ALIASES` because Windows tzdata reports Asia/Calcutta for Asia/Kolkata.
+  `browser_audit` filters `expected` down to platform/timezone when the engine is not
+  scriptable, so un-fakeable values are not graded as lies.
+- `proxy_intel.ProxyIntel.pick` must mirror round-robin when the scoreboard is empty (old
+  tests and old semantics depend on coverage + no-immediate-repeat), then skip cooling/dead
+  proxies and prefer `prefer_country`. If every proxy is cooling it returns the one that
+  recovers first — never silently a direct connection. Proxy tags are URL fragments
+  (`#DE`); `fingerprint.strip_proxy_tag` removes them before Playwright sees the URL.
+- The scraper marks block/fail/ok in `_recover_from_block`, `_handle_potential_block` and
+  `_rotate_identity`; do not scatter proxy bookkeeping into the search loops.
+- `Humanizer` takes injectable `rng`/`sleep` — tests run instantly. `level=0` multiplies all
+  delays by zero; keep that property (the whole test suite relies on it).
+- `test_brutal.py` (53 tests) is the fifth suite: 300 generated profiles validated, planted
+  incoherence caught, proxy pick/cooldown/persistence, audit scoring, Humanizer typing/typos,
+  eight new MCP tools, tagged-proxy scraper wiring. Run all FIVE suites.
+- Runtime artifacts now ignored: `output/proxy_intel.json`, `output/_intel_brutal.json`,
+  `output/agent_downloads/`.
 
 
 ## Security

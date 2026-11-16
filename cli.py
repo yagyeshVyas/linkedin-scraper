@@ -109,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     browser.add_argument("--extract", action="store_true", help="print readable page text")
     browser.add_argument("--screenshot", default="", help="save a full-page PNG here")
     browser.add_argument("--solve", action="store_true", help="wait for a bot wall to clear")
+    browser.add_argument("--audit", action="store_true", help="score the browser fingerprint")
+    browser.add_argument("--no-armor", action="store_true", help="skip the generated fingerprint")
+    browser.add_argument("--country", default="", help="fingerprint country code")
     browser.add_argument("--engine", default="auto",
                          choices=["auto", "patchright", "camoufox", "playwright"])
     browser.add_argument("--headed", action="store_true", help="show the browser window")
@@ -130,6 +133,30 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--browser", action="store_true", help="allow the stealth-browser tier")
     fetch.add_argument("--save", default="", help="write the HTML here")
     fetch.add_argument("--json", action="store_true")
+
+    stealth = sub.add_parser("stealth-check",
+                             help="score the live browser against anti-detection checks")
+    stealth.add_argument("--url", default="", help="audit after navigating here")
+    stealth.add_argument("--engine", default="auto",
+                         choices=["auto", "patchright", "camoufox", "playwright"])
+    stealth.add_argument("--headed", action="store_true", help="show the browser window")
+    stealth.add_argument("--proxy", default="")
+    stealth.add_argument("--country", default="", help="fingerprint country (US, GB, DE, ...)")
+    stealth.add_argument("--seed", type=int, default=0, help="reproducible fingerprint")
+    stealth.add_argument("--min-score", type=int, default=0,
+                         help="exit 1 below this score (default: config)")
+    stealth.add_argument("--all", action="store_true", help="show passing checks too")
+    stealth.add_argument("--json", action="store_true")
+
+    proxy_scan = sub.add_parser("proxy-scan",
+                                help="test proxies concurrently and update the scoreboard")
+    proxy_scan.add_argument("--proxies", default="",
+                            help="comma-separated; default: config.PROXY_LIST")
+    proxy_scan.add_argument("--url", default="https://api.ipify.org?format=json")
+    proxy_scan.add_argument("--timeout", type=float, default=15.0)
+    proxy_scan.add_argument("--workers", type=int, default=8)
+    proxy_scan.add_argument("--reset", action="store_true", help="clear cooldowns first")
+    proxy_scan.add_argument("--json", action="store_true")
 
     doctor = sub.add_parser("doctor", help="check environment, credentials and data")
     doctor.add_argument("--json", action="store_true")
@@ -409,13 +436,15 @@ def cmd_browser(args) -> int:
     argv: List[str] = ["--engine", args.engine]
     if args.url:
         argv += ["--url", args.url]
-    for flag in ("snapshot", "extract", "solve", "json"):
-        if getattr(args, flag):
-            argv.append(f"--{flag}")
+    for flag in ("snapshot", "extract", "solve", "json", "audit", "no_armor"):
+        if getattr(args, flag, False):
+            argv.append(f"--{flag.replace('_', '-')}")
     if args.screenshot:
         argv += ["--screenshot", args.screenshot]
     if args.proxy:
         argv += ["--proxy", args.proxy]
+    if args.country:
+        argv += ["--country", args.country]
     if not args.headed:
         argv.append("--headless")
     return agent_main(argv)
@@ -470,6 +499,119 @@ def cmd_fetch(args) -> int:
         if result.error:
             print(f"[fetch] {result.error}")
     return 0 if result.ok else 1
+
+
+def cmd_stealth_check(args) -> int:
+    """Launch the stealth browser, audit it, and print a scored report."""
+    from agent_browser import BrowserSession
+    from fingerprint import generate_profile, summary as fingerprint_summary
+    from stealth_audit import report_text
+
+    profile = generate_profile(seed=args.seed or None,
+                               country=args.country or None)
+    minimum = args.min_score
+    if not minimum:
+        try:
+            from config import Config
+            minimum = Config().STEALTH_AUDIT_MIN_SCORE
+        except Exception:
+            minimum = 70
+
+    async def run() -> dict:
+        session = BrowserSession(
+            engine=args.engine, headless=not args.headed,
+            proxy=args.proxy or None, profile=profile, timeout_ms=30000)
+        try:
+            await session.start()
+            if args.url:
+                await session.goto(args.url, solve=True)
+            return await session.audit()
+        finally:
+            await session.close()
+
+    result = asyncio.run(run())
+    if args.json:
+        payload = dict(result)
+        payload["fingerprint"] = profile
+        payload["min_score"] = minimum
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"fingerprint: {fingerprint_summary(profile)}")
+        print(report_text(result, only_failures=not args.all))
+    return 0 if int(result.get("score") or 0) >= int(minimum) else 1
+
+
+def _probe_proxy(proxy: str, url: str, timeout: float) -> dict:
+    """One proxy probe through the HTTP tiers (never launches a browser)."""
+    from cf_bypass import TieredFetcher
+    import time as _time
+
+    started = _time.time()
+    fetcher = TieredFetcher(proxy=proxy, timeout=timeout, allow_browser=False)
+    result = fetcher.fetch(url)
+    elapsed_ms = (result.seconds or (_time.time() - started)) * 1000.0
+    exit_ip = ""
+    if result.ok and result.html.strip().startswith("{"):
+        try:
+            exit_ip = str(json.loads(result.html).get("ip") or "")
+        except Exception:
+            exit_ip = ""
+    return {"proxy": proxy, "ok": result.ok, "status": result.status,
+            "latency_ms": round(elapsed_ms, 1), "exit_ip": exit_ip,
+            "challenge": result.challenge.verdict, "tier": result.tier}
+
+
+def cmd_proxy_scan(args) -> int:
+    """Probe every proxy concurrently and write the results into the scoreboard."""
+    from proxy_intel import ProxyIntel
+    from fingerprint import strip_proxy_tag
+
+    proxies = [part.strip() for part in (args.proxies or "").split(",") if part.strip()]
+    if not proxies:
+        try:
+            from config import Config
+            proxies = [strip_proxy_tag(url) for url in Config().PROXY_LIST]
+        except Exception:
+            proxies = []
+    if not proxies:
+        print("[proxy-scan] no proxies configured (config.PROXY_LIST or --proxies)")
+        return 2
+
+    intel = ProxyIntel()
+    if args.reset:
+        intel.reset_cooling()
+
+    async def run_all() -> list:
+        semaphore = asyncio.Semaphore(max(1, int(args.workers)))
+
+        async def one(proxy: str) -> dict:
+            async with semaphore:
+                return await asyncio.to_thread(_probe_proxy, proxy, args.url, args.timeout)
+
+        return await asyncio.gather(*(one(proxy) for proxy in proxies))
+
+    rows = asyncio.run(run_all())
+    for row in rows:
+        if row["ok"]:
+            intel.mark_ok(row["proxy"], row["latency_ms"])
+        elif row["challenge"] not in ("", "none"):
+            intel.mark_block(row["proxy"])
+        else:
+            intel.mark_failed(row["proxy"])
+
+    if args.json:
+        print(json.dumps({"results": rows, "scoreboard": intel.summary()},
+                         ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"{'proxy':<46} {'ok':<4} {'status':<7} {'ms':>8} {'tier':<10} exit")
+        print("-" * 92)
+        for row in sorted(rows, key=lambda item: (-int(item["ok"]), item["latency_ms"])):
+            print(f"{row['proxy'][:45]:<46} {'yes' if row['ok'] else 'no':<4} "
+                  f"{row['status']:<7} {row['latency_ms']:>8.0f} {row['tier']:<10} "
+                  f"{row['exit_ip'] or row['challenge']}")
+        healthy = sum(1 for row in rows if row["ok"])
+        print(f"\n{healthy}/{len(rows)} proxies healthy; scoreboard updated -> {intel.path}")
+    return 0 if any(row["ok"] for row in rows) else 1
 
 
 def cmd_db(args) -> int:
@@ -572,6 +714,39 @@ def run_doctor(db_path: str = "output/scraper.db") -> List[dict]:
                              "ready (cli.py browser / mcp-browser)"))
     except Exception as exc:
         checks.append(_check("agent-browser", False, f"{exc.__class__.__name__}: {exc}"))
+
+    # v7.0 armor: the generator must produce coherent identities, and the audit
+    # module must import even without a browser.
+    try:
+        from fingerprint import generate_profile, validate_profile
+        broken = 0
+        for seed in range(25):
+            if validate_profile(generate_profile(seed=seed)):
+                broken += 1
+        checks.append(_check("armor:fingerprint", broken == 0,
+                             "25/25 generated profiles coherent" if not broken
+                             else f"{broken}/25 generated profiles incoherent"))
+    except Exception as exc:
+        checks.append(_check("armor:fingerprint", False, f"{exc.__class__.__name__}: {exc}"))
+
+    try:
+        import stealth_audit  # noqa: F401
+        checks.append(_check("armor:audit", True, "probe ready (cli.py stealth-check)"))
+    except Exception as exc:
+        checks.append(_check("armor:audit", False, f"{exc.__class__.__name__}: {exc}"))
+
+    try:
+        from proxy_intel import ProxyIntel
+        from config import Config as _Config
+        _cfg = _Config()
+        intel = ProxyIntel(getattr(_cfg, "PROXY_INTEL_FILE", "output/proxy_intel.json"))
+        rows = intel.summary()
+        checks.append(_check("armor:proxy-intel", True,
+                             f"{len(rows)} proxy record(s)" if rows else "no history yet",
+                             level="warn"))
+    except Exception as exc:
+        checks.append(_check("armor:proxy-intel", False,
+                             f"{exc.__class__.__name__}: {exc}", level="warn"))
 
     browser_roots = []
     if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
@@ -701,6 +876,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "browser": cmd_browser,
         "mcp-browser": cmd_mcp_browser,
         "fetch": cmd_fetch,
+        "stealth-check": cmd_stealth_check,
+        "proxy-scan": cmd_proxy_scan,
         "doctor": cmd_doctor,
         "db": cmd_db,
     }

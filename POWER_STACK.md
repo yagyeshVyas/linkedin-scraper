@@ -394,9 +394,10 @@ exports, database) applies unchanged.
 .venv/Scripts/python.exe test_login_flow.py       # 5 login decision-tree tests
 .venv/Scripts/python.exe test_power_features.py   # 58 power-stack tests
 .venv/Scripts/python.exe test_cf_agent.py         # 46 stealth + agent-browser tests
+.venv/Scripts/python.exe test_brutal.py           # 53 armor tests (fingerprint/proxy/audit)
 ```
 
-All four run without a browser or network. The power suite covers URL
+All five run without a browser or network. The power suite covers URL
 encoding/facet validation, enrichment edge cases, scoring bounds and
 explanations, SQLite dedupe/merging/filters, every export format (including
 HTML escaping), the MCP JSON-RPC dispatcher, and scraper integration
@@ -521,11 +522,13 @@ ref raises `ToolError` ("take a new snapshot") instead of clicking whatever
 element inherited the position. That is the whole safety story of agent-driven
 browsers, and it is why the surface is refs, not coordinates.
 
-The 17 MCP tools: `browser_session`, `browser_navigate`, `browser_snapshot`,
+The 25 MCP tools: `browser_session`, `browser_navigate`, `browser_snapshot`,
 `browser_find`, `browser_click`, `browser_type`, `browser_press`,
 `browser_hover`, `browser_select`, `browser_scroll`, `browser_extract`,
 `browser_screenshot`, `browser_wait`, `browser_evaluate`, `browser_cookies`,
-`browser_solve`, `browser_close`.
+`browser_solve`, `browser_tabs`, `browser_console`, `browser_network`,
+`browser_dialog`, `browser_fill_form`, `browser_upload`, `browser_download`,
+`browser_audit`, `browser_close`.
 
 ### 15.5 Commands
 
@@ -559,4 +562,146 @@ CF_CLEARANCE_FILE = "output/clearance.json"
 CF_CLEARANCE_TTL_SECONDS = 1800
 CF_SOLVERR_URL = ""              # e.g. "http://127.0.0.1:8191"
 AGENT_BROWSER_STATE_DIR = "session/agent_browser"
+```
+
+---
+
+## 16. Armor: fingerprints, proxies, audit, hands (v7.0)
+
+Four additions that make the stack measurable instead of hopeful.
+
+### 16.1 Fingerprint generator (`fingerprint.py`)
+
+`_FINGERPRINTS` is four hand-written identities. The generator makes unlimited
+coherent ones: UA version ↔ `ua_version`, UA OS ↔ `navigator.platform` and
+UA-CH platform, OS ↔ GPU pool, viewport inside the claimed screen, timezone /
+locale / geolocation from one country bundle.
+
+```python
+from fingerprint import generate_profile, validate_profile, profile_for_proxy
+
+fp = generate_profile()                      # random coherent identity
+fp = generate_profile(seed=42)               # reproducible
+fp = generate_profile(country="GB")          # London story
+fp = profile_for_proxy("http://u:p@h:8080#DE")   # country from the proxy tag
+assert validate_profile(fp) == []
+```
+
+The generator is a validator too: `validate_profile()` returns every
+contradiction, `score_profile()` turns that into 0-100. Every generated profile
+is checked before it is used.
+
+Two coherence rules learned in production:
+
+* **The UA names the running binary.** After launch the real `browser.version`
+  is read and `generate_profile(chrome_major=...)` pins the UA to that major. A
+  UA claiming Chrome 131 over a 151 binary is a mismatch no script fixes.
+* **No proxy tag means local country, not random.** `detect_country()` resolves
+  override → proxy tag → `FINGERPRINT_COUNTRY` → system timezone → system
+  locale → US. A Berlin identity on a home IP is a contradiction.
+
+**Engine caveat, measured the hard way:** patchright *ignores*
+`context.add_init_script` entirely. A generated macOS identity under patchright
+on Windows is a lie the binary cannot patch, and the audit catches it. So:
+
+* `BrowserHandle.scriptable` says whether an engine honours init scripts
+  (stock Playwright yes, patchright/camoufox no).
+* With `scriptable=False`, the generator is constrained to the **host OS**
+  (`fingerprint.host_os()`), keeps only the geography, and pins a 1366x768
+  viewport (`safe_viewport=True`) because `screen` cannot be patched either.
+* The agent browser prefers the scriptable engine when armor is on
+  (`prefer_scriptable=True`), which is why a default `stealth-check` scores 100.
+  The scraper does the same through `PREFER_SCRIPTABLE_ENGINE = True`: real runs
+  measure **100 A** on Playwright + armor. Set it False for Cloudflare-heavy work
+  and patchright goes first, with the host-OS fingerprint.
+
+### 16.2 Live audit (`stealth_audit.py`)
+
+```bash
+python cli.py stealth-check --all
+python cli.py stealth-check --engine patchright --headed --all --json
+```
+
+Twelve weighted checks, 128 total weight: `navigator.webdriver`, chrome
+runtime, plugins/mimeTypes/pdfViewer, languages, platform vs UA, UA-CH brands
+and platform, WebGL (SwiftShader/llvmpipe fail), hardware, timezone (with IANA
+alias normalisation, e.g. Asia/Calcutta == Asia/Kolkata), viewport vs screen,
+CDP globals, iframe webdriver. Score = earned weight / 128; grades A-F.
+
+Measured on this machine: Playwright + armor **100 A** (agent and scraper
+alike — the production path kills `navigator.platform` and UA-CH mismatches);
+patchright headed **86 B** (it strips `navigator.userAgentData` and reports
+`webdriver=false` in iframes); patchright headless **61 C** (headless Chromium
+has SwiftShader, no plugins, no chrome runtime). That is why the scraper prefers
+the scriptable engine and why headed remains the real-run mode.
+
+### 16.3 Proxy intelligence (`proxy_intel.py`)
+
+```bash
+python cli.py proxy-scan                       # concurrent probe + scoreboard update
+python cli.py proxy-scan --proxies "http://a:1#US,http://b:1#DE" --json
+```
+
+Per proxy: successes, blocks, failures, EWMA latency, last used, cooldown,
+country. Blocks cool a proxy down exponentially (multiple of `PROXY_COOLDOWN_SECONDS`);
+repeated failures retire it; success clears the cooldown. The picker mirrors
+round-robin when nothing is known (so old behaviour and tests hold), then skips
+cooling proxies and prefers the requested country. When *every* proxy is
+cooling it returns the one that recovers first rather than dropping to a direct
+connection.
+
+Country tags live in the URL fragment — `http://user:pass@host:8080#DE` — which
+is never sent to the proxy. The scraper strips the tag before handing the URL to
+Playwright and feeds the country to the fingerprint generator, so the timezone
+never contradicts the exit IP.
+
+State: `output/proxy_intel.json`, atomic write, advisory only.
+
+### 16.4 Humanizer (`behavior.py`)
+
+`Humanizer` adds the parts a single random delay cannot fake:
+
+* inter-key intervals shaped by the character (space, punctuation, capitals),
+* ~1.5% typos with a realistic pause + backspace correction,
+* clicks at a random point inside the target after a stepped mouse approach,
+* reading loops (scroll, pause, occasional scroll-back),
+* a time-of-day rhythm multiplier (fewer humans at 3 a.m.).
+
+```python
+from behavior import Humanizer
+
+human = Humanizer(level=2)                 # 0 off, 3 slow
+await human.type_text(locator, "recruiter", page=page, submit=False)
+await human.click(locator, page)
+await human.read(page, seconds=4)
+```
+
+`rng` and `sleep` are injectable; tests run instantly and deterministically.
+
+### 16.5 Agent browser additions
+
+Beyond v6's navigate/snapshot/refs: `browser_tabs`, `browser_console`,
+`browser_network`, `browser_dialog`, `browser_fill_form`, `browser_upload`,
+`browser_download`, `browser_audit`. Downloads land in
+`output/agent_downloads/`; dialogs follow a set-then-trigger policy; console and
+network rings hold the last 300 events.
+
+```bash
+python cli.py browser --url https://example.com --audit --json
+python cli.py browser --url https://example.com --country DE --snapshot
+```
+
+### 16.6 Config additions
+
+```python
+FINGERPRINT_ENGINE = "generator"   # generator | static (the four hand-written profiles)
+FINGERPRINT_SEED = 0               # 0 = random per launch
+FINGERPRINT_COUNTRY = ""           # "" = infer from proxy tag / timezone / locale
+PREFER_SCRIPTABLE_ENGINE = True    # Playwright first so injected armor really runs
+PROXY_INTEL_ENABLED = True
+PROXY_INTEL_FILE = "output/proxy_intel.json"
+PROXY_COOLDOWN_SECONDS = 300
+HUMANIZE_LEVEL = 2                 # 0 off .. 3 slow
+STEALTH_AUDIT_MIN_SCORE = 70       # stealth-check exits 1 below this
+STEALTH_AUDIT_ON_LAUNCH = True     # one audit after login -> telemetry
 ```

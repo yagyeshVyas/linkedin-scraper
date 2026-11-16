@@ -46,11 +46,16 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from cf_bypass import (Challenge, classify_page, harvest_cookies,
                        launch_stealth_browser, solve_challenge)
+from fingerprint import (country_from_proxy, detect_country, generate_profile,
+                         host_os, init_script as fingerprint_script,
+                         strip_proxy_tag, summary as fingerprint_summary)
+from stealth_audit import audit_page
 
 logger = logging.getLogger("agent_browser")
 
@@ -270,11 +275,12 @@ class BrowserSession:
 
     def __init__(self, *, engine: str = "auto", headless: bool = True,
                  proxy: Optional[str] = None, user_agent: str = "",
-                 locale: str = "en-US", timezone_id: str = "America/New_York",
-                 viewport: Tuple[int, int] = DEFAULT_VIEWPORT,
+                 locale: Optional[str] = None, timezone_id: Optional[str] = None,
+                 viewport: Optional[Tuple[int, int]] = None,
                  storage_state: str = "", state_dir: str = DEFAULT_STATE_DIR,
                  channel: str = "", timeout_ms: int = 20000,
-                 solve_walls: bool = True):
+                 solve_walls: bool = True, armor: bool = True,
+                 profile: Optional[Dict[str, Any]] = None):
         self.engine = engine
         self.headless = bool(headless)
         self.proxy = proxy or None
@@ -287,6 +293,11 @@ class BrowserSession:
         self.channel = channel
         self.timeout_ms = int(timeout_ms)
         self.solve_walls = bool(solve_walls)
+        self.armor = bool(armor)
+        self._explicit_profile = bool(profile)
+        self.proxy_country = country_from_proxy(proxy or "")
+        self.fingerprint: Dict[str, Any] = dict(profile) if profile else (
+            generate_profile() if self.armor else {})
 
         self.handle = None
         self.browser = None
@@ -296,6 +307,12 @@ class BrowserSession:
         self._refs: Dict[str, dict] = {}
         self._snapshot_url = ""
         self._started = False
+        self.console_log: Deque[dict] = deque(maxlen=300)
+        self.network_log: Deque[dict] = deque(maxlen=300)
+        self.dialog_log: Deque[dict] = deque(maxlen=50)
+        self._dialog_policy = "dismiss"
+        self._dialog_text = ""
+        self.scriptable = False
 
     # ── lifecycle ──
 
@@ -313,35 +330,109 @@ class BrowserSession:
     async def start(self) -> dict:
         if self.running:
             return self.info()
-        proxy = {"server": self.proxy} if self.proxy else None
+        proxy = {"server": strip_proxy_tag(self.proxy)} if self.proxy else None
         self.handle = await launch_stealth_browser(
-            engine=self.engine, headless=self.headless, proxy=proxy, channel=self.channel)
+            engine=self.engine, headless=self.headless, proxy=proxy,
+            channel=self.channel, prefer_scriptable=self.armor)
         self.browser = self.handle.browser
+        self.scriptable = bool(getattr(self.handle, "scriptable", False))
+
+        # The UA must name the build that is actually running: a generated
+        # "Chrome 131" over a Chrome 141 binary is a mismatch no script fixes.
+        actual_major = 0
+        try:
+            version = str(getattr(self.browser, "version", "") or "")
+            actual_major = int(version.split(".")[0])
+        except (TypeError, ValueError):
+            actual_major = 0
+
+        fp = self.fingerprint or {}
+        if fp:
+            country = fp.get("country") or detect_country(self.proxy_country)
+            if not self._explicit_profile or not self.scriptable:
+                # patchright/camoufox ignore add_init_script: the OS must be
+                # the host's and the viewport must fit an unknown real screen.
+                fp = generate_profile(
+                    country=country,
+                    chrome_major=actual_major or None,
+                    os_name=None if self.scriptable else host_os(),
+                    safe_viewport=not self.scriptable,
+                )
+                self.fingerprint = fp
+        user_agent = self.user_agent or str(fp.get("user_agent") or "")
+        locale = self.locale or str(fp.get("locale") or "en-US")
+        timezone_id = self.timezone_id or str(fp.get("timezone_id") or "America/New_York")
+        viewport = self.viewport or fp.get("viewport") or DEFAULT_VIEWPORT
+
         context_args: Dict[str, Any] = {
-            "viewport": {"width": int(self.viewport[0]), "height": int(self.viewport[1])},
-            "locale": self.locale,
-            "timezone_id": self.timezone_id,
+            "viewport": {"width": int(viewport[0]), "height": int(viewport[1])},
+            "locale": locale,
+            "timezone_id": timezone_id,
+            "accept_downloads": True,
             "permissions": ["geolocation"],
         }
-        if self.user_agent:
-            context_args["user_agent"] = self.user_agent
-        state = self._state_file()
-        if self.storage_state:
+        if user_agent:
+            context_args["user_agent"] = user_agent
+        if fp.get("geo"):
+            context_args["geolocation"] = {
+                "longitude": float(fp["geo"]["longitude"]),
+                "latitude": float(fp["geo"]["latitude"]),
+            }
+        if not self.storage_state:
+            state = self._state_file()
+            if state.exists():
+                context_args["storage_state"] = str(state)
+        else:
             context_args["storage_state"] = self.storage_state
-        elif state.exists():
-            context_args["storage_state"] = str(state)
+
         self.context = await self.browser.new_context(**context_args)
         await self.context.add_init_script(_STEALTH_JS)
+        if fp and self.scriptable:
+            await self.context.add_init_script(fingerprint_script(fp))
         self.page = await self.context.new_page()
         self.page.set_default_timeout(self.timeout_ms)
+        self._attach_listeners(self.page)
         self._started = True
-        logger.info("agent browser up (%s, headless=%s)", self.handle.engine, self.headless)
+        logger.info("agent browser up (%s, headless=%s%s%s)",
+                    self.handle.engine, self.headless,
+                    ", scriptable" if self.scriptable else "",
+                    f", {fingerprint_summary(fp)}" if fp else "")
         return self.info()
+
+    def _attach_listeners(self, page) -> None:
+        """Record console, network and dialogs without blocking the page."""
+        page.on("console", lambda message: self.console_log.append({
+            "type": message.type, "text": (message.text or "")[:500],
+            "url": getattr(message, "location", {}).get("url", "")
+            if isinstance(getattr(message, "location", None), dict) else "",
+        }))
+        page.on("pageerror", lambda error: self.console_log.append({
+            "type": "pageerror", "text": str(error)[:500], "url": page.url}))
+        page.on("request", lambda request: self.network_log.append({
+            "kind": "request", "method": request.method, "url": request.url,
+            "resource": request.resource_type, "status": None}))
+        page.on("response", lambda response: self.network_log.append({
+            "kind": "response", "method": response.request.method,
+            "url": response.url, "resource": response.request.resource_type,
+            "status": response.status}))
+        page.on("dialog", self._handle_dialog)
+
+    async def _handle_dialog(self, dialog) -> None:
+        self.dialog_log.append({"type": dialog.type, "message": dialog.message,
+                                "policy": self._dialog_policy})
+        try:
+            if self._dialog_policy == "accept":
+                await dialog.accept(self._dialog_text or None)
+            else:
+                await dialog.dismiss()
+        except Exception:
+            pass
 
     def info(self) -> dict:
         return {
             "engine": self.handle.engine if self.handle else "",
             "headless": self.headless,
+            "scriptable": self.scriptable,
             "url": self.page.url if self.page else "",
             "running": self.running,
         }
@@ -481,6 +572,154 @@ class BrowserSession:
                    if needle in str(node.get("name") or "").lower()
                    or needle in str(node.get("role") or "").lower()]
         return {"query": text, "count": len(matches), "matches": matches[:max(1, int(limit))]}
+
+    # ── tabs + telemetry ──
+
+    async def tabs(self, *, action: str = "list", index: int = 0,
+                   url: str = "") -> dict:
+        """List, open, select or close tabs; the selected one becomes active."""
+        if self.context is None:
+            raise ToolError("no browser session")
+        pages = list(self.context.pages)
+        action = str(action or "list").lower()
+        if action == "list":
+            tabs = []
+            for position, page in enumerate(pages):
+                try:
+                    title = await page.title()
+                except Exception:
+                    title = ""
+                tabs.append({"index": position, "url": page.url, "title": title,
+                             "active": page is self.page})
+            return {"count": len(tabs), "tabs": tabs}
+        if action == "new":
+            page = await self.context.new_page()
+            self._attach_listeners(page)
+            page.set_default_timeout(self.timeout_ms)
+            self.page = page
+            if url:
+                await self.goto(url)
+            return {"opened": True, "count": len(self.context.pages),
+                    "url": self.page.url}
+        if action in ("select", "switch"):
+            if not 0 <= int(index) < len(pages):
+                raise ToolError(f"tab index {index} out of range (0..{len(pages) - 1})")
+            self.page = pages[int(index)]
+            try:
+                await self.page.bring_to_front()
+            except Exception:
+                pass
+            return {"selected": int(index), "url": self.page.url}
+        if action == "close":
+            if len(pages) <= 1:
+                raise ToolError("cannot close the last tab")
+            target = pages[int(index)] if 0 <= int(index) < len(pages) else self.page
+            await target.close()
+            remaining = list(self.context.pages)
+            self.page = remaining[min(int(index), len(remaining) - 1)]
+            return {"closed": True, "count": len(remaining), "url": self.page.url}
+        raise ToolError(f"unknown tabs action {action!r}")
+
+    def console(self, *, clear: bool = False, limit: int = 100,
+                errors_only: bool = False) -> dict:
+        entries = list(self.console_log)
+        if errors_only:
+            entries = [entry for entry in entries
+                       if entry.get("type") in ("error", "pageerror", "warning")]
+        if clear:
+            self.console_log.clear()
+        return {"count": len(entries), "entries": entries[-max(1, int(limit)):]}
+
+    def network(self, *, clear: bool = False, limit: int = 100,
+                contains: str = "", status_min: int = 0) -> dict:
+        entries = list(self.network_log)
+        if contains:
+            needle = contains.lower()
+            entries = [entry for entry in entries if needle in str(entry.get("url", "")).lower()]
+        if status_min:
+            entries = [entry for entry in entries
+                       if int(entry.get("status") or 0) >= int(status_min)]
+        if clear:
+            self.network_log.clear()
+        return {"count": len(entries), "entries": entries[-max(1, int(limit)):]}
+
+    def dialog(self, *, action: str = "dismiss", text: str = "") -> dict:
+        """Set the policy for future dialogs (accept/dismiss) and show history."""
+        policy = str(action or "dismiss").lower()
+        if policy not in ("accept", "dismiss"):
+            raise ToolError("action must be 'accept' or 'dismiss'")
+        self._dialog_policy = policy
+        self._dialog_text = str(text or "")
+        return {"policy": policy, "prompt_text": self._dialog_text,
+                "recent": list(self.dialog_log)[-10:]}
+
+    # ── forms + files ──
+
+    async def fill_form(self, fields: List[dict], *, submit: bool = False) -> dict:
+        if not fields:
+            raise ToolError("fields is required (a list of {ref|selector, value})")
+        filled = []
+        for field in fields:
+            locator = await self._resolve(field.get("ref"), field.get("selector"))
+            try:
+                await locator.fill(str(field.get("value") or ""),
+                                   timeout=self.timeout_ms)
+            except Exception as exc:
+                raise ToolError(
+                    f"cannot fill {field.get('ref') or field.get('selector')!r}: "
+                    f"{type(exc).__name__}: {exc}") from exc
+            filled.append(field.get("ref") or field.get("selector"))
+        if submit:
+            await self.press("Enter")
+        return {"filled": filled, "count": len(filled), "submitted": bool(submit)}
+
+    async def upload(self, *, ref: Optional[str] = None, selector: Optional[str] = None,
+                     files: List[str] = None) -> dict:
+        files = [str(path) for path in (files or []) if str(path)]
+        if not files:
+            raise ToolError("files is required")
+        missing = [path for path in files if not Path(path).exists()]
+        if missing:
+            raise ToolError(f"file(s) not found: {missing}")
+        locator = await self._resolve(ref, selector)
+        try:
+            async with self.page.expect_file_chooser(timeout=self.timeout_ms) as info:
+                await locator.click()
+            chooser = await info.value
+            await chooser.set_files(files)
+        except Exception as exc:
+            raise ToolError(f"upload failed: {type(exc).__name__}: {exc}") from exc
+        return {"uploaded": len(files), "files": files}
+
+    async def download(self, *, ref: Optional[str] = None, selector: Optional[str] = None,
+                       path: str = "") -> dict:
+        locator = await self._resolve(ref, selector)
+        target = Path(path) if path else (
+            Path("output") / "agent_downloads" / f"download_{int(time.time())}.bin")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            async with self.page.expect_download(timeout=max(30000, self.timeout_ms)) as info:
+                await locator.click()
+            download = await info.value
+            await download.save_as(str(target))
+            suggested = download.suggested_filename
+        except Exception as exc:
+            raise ToolError(f"download failed: {type(exc).__name__}: {exc}") from exc
+        return {"path": str(target), "bytes": target.stat().st_size if target.exists() else 0,
+                "suggested_name": suggested, "url": self.page.url}
+
+    # ── audit ──
+
+    async def audit(self) -> dict:
+        expected = self.fingerprint or None
+        if expected and not self.scriptable:
+            # Values the engine cannot fake must not be graded as if it could.
+            expected = {key: expected[key] for key in ("platform", "timezone_id")
+                        if key in expected}
+        result = await audit_page(self.page, expected=expected)
+        result["fingerprint"] = self.fingerprint or {}
+        result["scriptable"] = self.scriptable
+        return result
 
     # ── actions ──
 
@@ -800,6 +1039,62 @@ TOOLS: List[dict] = [
      "description": "Re-check the current page for a bot wall and wait for the challenge to "
                     "clear. Returns the verdict before and after.",
      "inputSchema": _schema({"timeout_seconds": {"type": "number", "minimum": 5, "maximum": 180}})},
+    {"name": "browser_tabs",
+     "description": "List, open, select or close tabs. The selected tab becomes the active page.",
+     "inputSchema": _schema({
+         "action": {"type": "string", "enum": ["list", "new", "select", "close"],
+                    "default": "list"},
+         "index": {"type": "integer", "minimum": 0, "default": 0},
+         "url": {"type": "string", "description": "URL for action=new"},
+     })},
+    {"name": "browser_console",
+     "description": "Browser console messages and page errors captured since the session started.",
+     "inputSchema": _schema({
+         "clear": {"type": "boolean", "default": False},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 300, "default": 100},
+         "errors_only": {"type": "boolean", "default": False},
+     })},
+    {"name": "browser_network",
+     "description": "Recent network requests/responses (method, URL, status, resource type).",
+     "inputSchema": _schema({
+         "clear": {"type": "boolean", "default": False},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 300, "default": 100},
+         "contains": {"type": "string", "description": "substring filter on the URL"},
+         "status_min": {"type": "integer", "minimum": 0, "default": 0},
+     })},
+    {"name": "browser_dialog",
+     "description": "Set the policy for JavaScript dialogs that appear next (accept or dismiss).",
+     "inputSchema": _schema({
+         "action": {"type": "string", "enum": ["accept", "dismiss"], "default": "dismiss"},
+         "text": {"type": "string", "description": "text to type into a prompt()"},
+     })},
+    {"name": "browser_fill_form",
+     "description": "Fill several fields in one call, each by snapshot ref or CSS selector.",
+     "inputSchema": _schema({
+         "fields": {"type": "array", "items": {
+             "type": "object",
+             "properties": {"ref": {"type": "string"}, "selector": {"type": "string"},
+                            "value": {"type": "string"}},
+             "additionalProperties": False,
+         }},
+         "submit": {"type": "boolean", "default": False},
+     }, ["fields"])},
+    {"name": "browser_upload",
+     "description": "Click an input/button and hand local files to the file chooser.",
+     "inputSchema": _schema({
+         "ref": {"type": "string"}, "selector": {"type": "string"},
+         "files": {"type": "array", "items": {"type": "string"}},
+     }, ["files"])},
+    {"name": "browser_download",
+     "description": "Click a link/button that starts a download and save the file locally.",
+     "inputSchema": _schema({
+         "ref": {"type": "string"}, "selector": {"type": "string"},
+         "path": {"type": "string"},
+     })},
+    {"name": "browser_audit",
+     "description": "Score the live browser against anti-detection checks (webdriver, plugins, "
+                    "WebGL, UA-CH, hardware, timezone, CDP leaks). Returns score + findings.",
+     "inputSchema": _schema({})},
     {"name": "browser_close",
      "description": "Persist the login state and close the browser.",
      "inputSchema": _schema({})},
@@ -933,6 +1228,37 @@ class AgentBrowserServer:
         if name == "browser_solve":
             return self.runner.run(session.solve(
                 timeout=args.get("timeout_seconds")), timeout=timeout)
+        if name == "browser_tabs":
+            return self.runner.run(session.tabs(
+                action=str(args.get("action") or "list"),
+                index=int(args.get("index") or 0),
+                url=str(args.get("url") or "")), timeout=timeout)
+        if name == "browser_console":
+            return session.console(clear=bool(args.get("clear", False)),
+                                   limit=int(args.get("limit") or 100),
+                                   errors_only=bool(args.get("errors_only", False)))
+        if name == "browser_network":
+            return session.network(clear=bool(args.get("clear", False)),
+                                   limit=int(args.get("limit") or 100),
+                                   contains=str(args.get("contains") or ""),
+                                   status_min=int(args.get("status_min") or 0))
+        if name == "browser_dialog":
+            return session.dialog(action=str(args.get("action") or "dismiss"),
+                                  text=str(args.get("text") or ""))
+        if name == "browser_fill_form":
+            return self.runner.run(session.fill_form(
+                list(args.get("fields") or []),
+                submit=bool(args.get("submit", False))), timeout=timeout)
+        if name == "browser_upload":
+            return self.runner.run(session.upload(
+                ref=args.get("ref"), selector=args.get("selector"),
+                files=list(args.get("files") or [])), timeout=timeout)
+        if name == "browser_download":
+            return self.runner.run(session.download(
+                ref=args.get("ref"), selector=args.get("selector"),
+                path=str(args.get("path") or "")), timeout=timeout)
+        if name == "browser_audit":
+            return self.runner.run(session.audit(), timeout=timeout)
         raise ToolError(f"unknown tool: {name}")
 
     # ── MCP protocol ──
@@ -1052,6 +1378,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--extract", action="store_true", help="print readable page text")
     parser.add_argument("--screenshot", default="", help="save a PNG to this path")
     parser.add_argument("--solve", action="store_true", help="solve a bot wall on --url")
+    parser.add_argument("--audit", action="store_true",
+                        help="score the live browser against anti-detection checks")
+    parser.add_argument("--no-armor", action="store_true",
+                        help="do not apply a generated fingerprint")
+    parser.add_argument("--country", default="",
+                        help="generate a fingerprint for this country code (US, GB, DE...)")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -1075,14 +1407,17 @@ def main(argv=None) -> int:
         logger.info("agent browser MCP ready on stdio (engine=%s)", args.engine)
         return server.serve()
 
-    if not (args.url or args.snapshot or args.extract or args.screenshot or args.solve):
+    if not (args.url or args.snapshot or args.extract or args.screenshot
+            or args.solve or args.audit):
         build_parser().print_help()
         return 2
 
     async def run() -> dict:
+        profile = generate_profile(country=args.country or None) if args.country else None
         session = BrowserSession(engine=args.engine, headless=bool(args.headless),
                                  proxy=args.proxy or None, state_dir=args.state_dir,
-                                 channel=args.channel)
+                                 channel=args.channel, profile=profile,
+                                 armor=not args.no_armor)
         out: Dict[str, Any] = {}
         try:
             await session.start()
@@ -1090,6 +1425,8 @@ def main(argv=None) -> int:
                 out["navigation"] = await session.goto(args.url)
             if args.solve:
                 out["solve"] = await session.solve()
+            if args.audit:
+                out["audit"] = await session.audit()
             if args.snapshot:
                 out["snapshot"] = await session.snapshot()
             if args.extract:
@@ -1105,6 +1442,11 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     else:
+        audit = payload.get("audit") or {}
+        if audit:
+            from stealth_audit import report_text
+            print(report_text(audit, only_failures=True))
+            print()
         snapshot = payload.get("snapshot") or {}
         if snapshot:
             print(snapshot.get("snapshot") or "")

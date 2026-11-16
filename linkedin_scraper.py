@@ -7,10 +7,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import Page, BrowserContext
 from bs4 import BeautifulSoup
 
 from behavior import human_mouse_move, idle_jitter, warm_up
+from cf_bypass import (block_reason_for, classify_page, launch_stealth_browser,
+                       solve_challenge)
 from config import Config
 from enrichment import enrich_record
 from scoring import keyword_weights, read_resume_text, score_record
@@ -129,6 +131,9 @@ class LinkedInScraper:
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.playwright = None
+        # Live engine handle (patchright / camoufox / playwright) — owns the
+        # browser AND the process that must be stopped after it.
+        self.engine_handle = None
         # Auto-recovery counter: how many block/authwall events this run has
         # already rotated its way out of (see _recover_from_block).
         self._block_recoveries = 0
@@ -210,41 +215,31 @@ class LinkedInScraper:
             else:
                 logger.warning("🌐 No free proxy available — using direct connection")
 
-        self.playwright = await async_playwright().start()
+        # Engine ladder: patchright (deep-patched Chrome) > camoufox
+        # (fingerprint-spoofed Firefox) > stock playwright, or one explicit
+        # engine from config. A dead proxy fails at launch, so fall back to a
+        # direct connection once instead of dying.
+        engine = getattr(self.config, "BROWSER_ENGINE", "auto")
+        channel = getattr(self.config, "BROWSER_CHANNEL", "")
         try:
-            self.browser = await self.playwright.chromium.launch(
-                headless=self.config.HEADLESS,
-                proxy=proxy_dict,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--disable-dev-shm-usage",
-                    "--disable-extensions",
-                    "--start-maximized",
-                ]
+            self.engine_handle = await launch_stealth_browser(
+                engine=engine, headless=self.config.HEADLESS,
+                proxy=proxy_dict, channel=channel,
             )
         except Exception as e:
-            # A dead proxy usually surfaces right here — fall back to a direct
-            # connection once instead of dying with the launch.
             if proxy_dict:
                 logger.warning(f"⚠️  Launch with proxy failed ({e.__class__.__name__}) — retrying direct.")
                 proxy_dict = None
                 self.current_proxy = None
-                self.browser = await self.playwright.chromium.launch(
-                    headless=self.config.HEADLESS,
-                    proxy=None,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-infobars",
-                        "--disable-dev-shm-usage",
-                        "--disable-extensions",
-                        "--start-maximized",
-                    ]
+                self.engine_handle = await launch_stealth_browser(
+                    engine=engine, headless=self.config.HEADLESS,
+                    proxy=None, channel=channel,
                 )
             else:
                 raise
+        self.playwright = self.engine_handle.driver
+        self.browser = self.engine_handle.browser
+        logger.info(f"🌐 Engine: {self.engine_handle.engine}")
 
         # Coherent fingerprint selection — either a fixed profile per launch
         # (consistent UA/platform/GPU/viewport/timezone) or randomized each
@@ -409,21 +404,13 @@ class LinkedInScraper:
 
         logger.info("✅ Browser launched successfully.")
 
-    async def _rotate_identity(self) -> bool:
-        """Re-launch with a fresh IP/proxy + fingerprint, then re-login.
+    async def _shutdown_browser(self):
+        """Close context, browser, engine driver — every step independently guarded.
 
-        Teardown is guarded so a half-dead browser/context/page (very likely
-        right after a block) can't turn a rotation into a crash, and the
-        Playwright driver is always stopped and restarted cleanly instead of
-        being reused in an unknown state.
-
-        Returns True only when the new identity is authenticated — callers can
-        use that to decide whether it's safe to resume scraping.
+        Safe to call twice and after a half-dead session: a block can leave the
+        context, browser or driver in any state, and teardown must never mask
+        the real error.
         """
-        logger.info("🔄 Rotating identity (new IP + fingerprint)...")
-        self._telemetry_event("rotate", f"proxy: {self.current_proxy or 'direct'}")
-
-        # Tear down old context then browser, each independently guarded.
         for closer in (
             (self.context.close() if self.context is not None else None),
             (self.browser.close() if self.browser is not None else None),
@@ -438,14 +425,38 @@ class LinkedInScraper:
         self.browser = None
         self.page = None
 
-        # Always restart the driver — reusing it after a block/dead proxy is the
-        # single most common source of "target closed" crashes.
+        if self.engine_handle is not None:
+            try:
+                await self.engine_handle.close()
+            except Exception:
+                pass
+            self.engine_handle = None
+
+        # Stock-playwright path / belt-and-braces: stop the driver too.
         try:
             if self.playwright is not None:
                 await self.playwright.stop()
         except Exception:
             pass
         self.playwright = None
+
+    async def _rotate_identity(self) -> bool:
+        """Re-launch with a fresh IP/proxy + fingerprint, then re-login.
+
+        Teardown is guarded so a half-dead browser/context/page (very likely
+        right after a block) can't turn a rotation into a crash, and the
+        Playwright driver is always stopped and restarted cleanly instead of
+        being reused in an unknown state.
+
+        Returns True only when the new identity is authenticated — callers can
+        use that to decide whether it's safe to resume scraping.
+        """
+        logger.info("🔄 Rotating identity (new IP + fingerprint)...")
+        self._telemetry_event("rotate", f"proxy: {self.current_proxy or 'direct'}")
+
+        # Tear down the old identity completely before relaunching: reusing a
+        # half-dead driver after a block is the most common "target closed".
+        await self._shutdown_browser()
 
         try:
             await self._launch_browser()
@@ -575,7 +586,37 @@ class LinkedInScraper:
         except Exception:
             pass
 
-        # 2) Rate limiting / throttling — LinkedIn's classic "slow down" wall.
+        # 2) Edge/bot walls (Cloudflare, Turnstile, DataDome, PerimeterX,
+        # Imperva, Akamai). These sit in front of LinkedIn/ATS pages and look
+        # nothing like a rate-limit page; the classifier names them, and the
+        # solver waits for the challenge to clear instead of rotating straight
+        # into the same wall.
+        challenge = classify_page(current_url, content)
+        if challenge.hard:
+            logger.warning(f"🧱 Bot wall: {challenge.verdict} ({challenge.hint})")
+            # Only edge walls are worth waiting on. LinkedIn's own captcha does
+            # not clear by waiting — rotating identity is the correct response.
+            solvable = challenge.verdict in ("cloudflare", "turnstile", "bot_wall")
+            if solvable and getattr(self.config, "CF_AUTO_SOLVE", True):
+                timeout = getattr(self.config, "CF_SOLVE_TIMEOUT", 45)
+                if await solve_challenge(self.page, timeout=timeout):
+                    logger.info("✅ Bot wall cleared — continuing.")
+                    self._telemetry_event("wall", f"{challenge.verdict}: solved")
+                    return False
+                # A headed session can always fall back to a human click; that
+                # is the one thing an interactive Turnstile actually wants.
+                if (not self.config.HEADLESS
+                        and getattr(self.config, "CF_MANUAL_FALLBACK", True)
+                        and await self._await_wall_resolution(
+                            getattr(self.config, "CF_MANUAL_TIMEOUT", 90))):
+                    logger.info("✅ Bot wall cleared manually — continuing.")
+                    self._telemetry_event("wall", f"{challenge.verdict}: manual")
+                    return False
+            self._block_reason = block_reason_for(challenge.verdict) or challenge.verdict
+            self._telemetry_event("wall", f"{challenge.verdict}: unsolved")
+            return True
+
+        # 3) Rate limiting / throttling — LinkedIn's classic "slow down" wall.
         if any(m in content for m in (
             "too many requests",
             "error 429",
@@ -589,7 +630,7 @@ class LinkedInScraper:
             self._block_reason = "rate_limit"
             return True
 
-        # 3) Forced auth wall — a logged-in session never sees this on a search.
+        # 4) Forced auth wall — a logged-in session never sees this on a search.
         if any(m in current_url for m in ("authwall", "/uas/login", "/signup")) or any(
             m in content for m in ("sign in to linkedin", "join linkedin to see", "authwall")
         ):
@@ -597,7 +638,7 @@ class LinkedInScraper:
             self._block_reason = "authwall"
             return True
 
-        # 4) Explicit human-verification interstitials.
+        # 5) Explicit human-verification interstitials.
         if any(m in content for m in (
             "prove you're not a robot",
             "are you a human",
@@ -690,6 +731,30 @@ class LinkedInScraper:
                 if await self._is_logged_in():
                     return True
         logger.error("❌ Verification/2FA was not completed in time.")
+        return False
+
+    async def _await_wall_resolution(self, timeout: int) -> bool:
+        """Poll a headed session while the operator clears a bot wall by hand.
+
+        Interactive Turnstile is designed to require a human; pretending a
+        headless click always works is how scrapers burn accounts. A headed run
+        pauses, says what to click, and continues the moment the wall is gone.
+        """
+        logger.warning(
+            f"🧱 Bot wall needs a human — solve it in the browser window "
+            f"(up to {timeout}s)..."
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(5, int(timeout))
+        while loop.time() < deadline:
+            await asyncio.sleep(3)
+            try:
+                html = await self.page.content()
+            except Exception:
+                continue
+            if not classify_page(self.page.url, html).hard:
+                return True
+        logger.error("❌ Bot wall was not cleared in time.")
         return False
 
     async def login(self) -> bool:
@@ -2047,10 +2112,7 @@ class LinkedInScraper:
                 logger.info(f"✅ DRY RUN OK — {len(urls)} profile(s) found for '{title}' at '{company}'. No profiles scraped.")
             return True
         finally:
-            if self.browser:
-                await self.browser.close()
-            if self.playwright:
-                await self.playwright.stop()
+            await self._shutdown_browser()
             self._finalize_telemetry(mode)
 
     # ─────────────────────────────────────────────
@@ -2614,10 +2676,7 @@ class LinkedInScraper:
             else:
                 logger.info("\nNo results to export.")
 
-            if self.browser:
-                await self.browser.close()
-            if self.playwright:
-                await self.playwright.stop()
+            await self._shutdown_browser()
 
             logger.info("\nFinal Summary:")
             logger.info(f"   Records saved   : {len(self.results)}")

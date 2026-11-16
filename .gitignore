@@ -1,1 +1,6 @@
 .aider*
+
+# runtime state — bot-wall cookies, agent-browser profiles, screenshots
+output/clearance.json
+output/agent_screenshots/
+session/agent_browser/

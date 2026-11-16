@@ -80,10 +80,11 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   normalisation — keep it if you touch either side.
 - The dashboard table's sort coerces with `String(a[key] ?? "")`; without that, sorting any
   boolean/number column (open_to_work, follower_count, connection_count) throws.
-- Behavioral tests: `test_scraper_fixes.py` (33 tests) and `test_login_flow.py` (5 tests) — run
-  both with `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite
-  drives the real `login()` against fakes). No pytest in the venv — each file is a plain script
-  with a `__main__` runner list; add new tests to that list.
+- Behavioral tests: `test_scraper_fixes.py` (33 tests), `test_login_flow.py` (5 tests),
+  `test_power_features.py` (58 tests) and `test_cf_agent.py` (46 tests) — run each with
+  `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite drives the
+  real `login()` against fakes). No pytest in the venv — each file is a plain script with a
+  `__main__` runner list; add new tests to that list.
 
 ## Power stack (v5.0, 2026-11)
 
@@ -132,6 +133,52 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   LinkedIn directly; scraping stays in `cli.py run`. stdout is protocol-only — log to stderr.
 
 
+## Stealth + agent browser (v6.0, 2026-11)
+
+- Two new modules, both import-safe (no browser/network at import): `cf_bypass.py`
+  (wall classifier, clearance cache, tiered fetch, engine launch) and `agent_browser.py`
+  (a11y-ref browser, MCP server, function-calling specs). `cli.py` grew `browser`,
+  `mcp-browser` and `fetch`; `doctor` reports engines / curl_cffi / agent-browser.
+- Engine ladder: `cf_bypass.launch_stealth_browser(engine="auto")` tries patchright →
+  camoufox → playwright and returns a `BrowserHandle` that owns the browser AND the driver
+  that must stop. `linkedin_scraper._launch_browser` uses it; `_shutdown_browser()` is the
+  ONLY teardown (context, browser, handle, driver, each guarded, safe twice). Do not
+  reintroduce a raw `async_playwright()` in the scraper — it orphans the handle and skips
+  camoufox.
+- `_check_page_block_status` runs `classify_page` BEFORE the rate-limit/authwall phrase
+  checks: a CF interstitial contains none of LinkedIn's phrases. The verdict reaches
+  `_block_reason` through `block_reason_for()`; both `cloudflare` and `turnstile` map to
+  `"cloudflare"` so `_recover_from_block` rotates normally. `CF_AUTO_SOLVE` waits the wall
+  out first and returns "not blocked" when it clears; a headed run then falls back to
+  `_await_wall_resolution()` so a human click finishes an interactive Turnstile
+  (`CF_MANUAL_FALLBACK` / `CF_MANUAL_TIMEOUT`). `solve_challenge` also accepts a solved
+  `cf-turnstile-response` token as success, so a widget that solved without navigating still
+  counts.
+- Classifier invariant: Turnstile is a WALL only when the surrounding document is an
+  interstitial (CF challenge markers, "verify you are human", or body under ~6 KB). A widget
+  on a content page (login form, 2captcha demo) is an in-page captcha — treating it as a wall
+  made the agent browser burn its whole solver timeout on ordinary pages.
+  `challenges.cloudflare.com` alone proves the widget exists, not that the page is walled.
+- Clearance cache is keyed `domain | proxy | UA` on purpose: `cf_clearance` is bound to the
+  solving IP, so replaying a cookie across a rotated proxy is a detection signal, not a
+  shortcut. TTL + atomic write; cache failures are debug-level, never fatal.
+- TLS target selection must pick a profile that EXISTS in the installed curl_cffi
+  (`_curl_targets()`); its enum is `chrome131` / `safari180` / `firefox144`-style, not
+  `safari17_0`. An invalid target silently degrades to a generic handshake.
+- Agent browser contract: refs (`eN`) are re-assigned on every snapshot and re-verified on
+  every action; a stale ref raises `ToolError` ("take a new snapshot") instead of clicking a
+  moved element. `BrowserSession._resolve()` is the single ref/selector resolution point.
+- `AgentBrowserServer` bridges the synchronous MCP stdio loop to the async session through
+  `AsyncRunner` (private loop thread); `serve()` closes the session on EOF. stdout is
+  protocol-only — log to stderr.
+- `test_cf_agent.py` (46 tests) is the fourth suite: classifier cases, cache scoping/TTL,
+  TLS targets, FlareSolverr, fetch-ladder order, snapshot format/staleness, MCP dispatch,
+  scraper block classification. Run all FOUR suites.
+- Windows console: `agent_browser.main` and `cli.main` reconfigure stdout/stderr to UTF-8
+  with `errors="replace"` — page text is arbitrary Unicode and cp1252 would crash a snapshot
+  print. Keep that at CLI entry points only; library code must not touch global streams.
+
+
 ## Security
 
 - `config.py` hardcodes real-looking LinkedIn credentials as field defaults and they are in
@@ -141,8 +188,8 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 ## Gotchas
 
 - `python -m py_compile` writes `.pyc` files into `__pycache__`, which is TRACKED in git here
-  (`.gitignore` only excludes `.aider*`). For syntax checks prefer in-process `ast.parse`, or
-  run with `PYTHONDONTWRITEBYTECODE=1`.
+  (`.gitignore` only excludes `.aider*` plus the v6.0 runtime state). For syntax checks prefer
+  in-process `ast.parse`, or run with `PYTHONDONTWRITEBYTECODE=1`.
 - The stealth init script in `_launch_browser` is one big f-string, so **every** literal JS brace
   must be doubled (`{{`/`}}`). A single stray `{` makes the module fail to import
   (`f-string: single '}' is not allowed`) or silently emits broken JS. `test_stealth_script_

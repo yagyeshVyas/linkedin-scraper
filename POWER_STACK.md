@@ -1,4 +1,4 @@
-# Power Stack (v5.0)
+# Power Stack (v6.0)
 
 Everything the scraper gained on top of the classic "search → Excel" flow.
 Nothing here is required: with the config defaults the old behaviour is intact.
@@ -393,10 +393,170 @@ exports, database) applies unchanged.
 .venv/Scripts/python.exe test_scraper_fixes.py    # 33 classic tests
 .venv/Scripts/python.exe test_login_flow.py       # 5 login decision-tree tests
 .venv/Scripts/python.exe test_power_features.py   # 58 power-stack tests
+.venv/Scripts/python.exe test_cf_agent.py         # 46 stealth + agent-browser tests
 ```
 
-All three run without a browser or network. The power suite covers URL
+All four run without a browser or network. The power suite covers URL
 encoding/facet validation, enrichment edge cases, scoring bounds and
 explanations, SQLite dedupe/merging/filters, every export format (including
 HTML escaping), the MCP JSON-RPC dispatcher, and scraper integration
 (`_register_search`, faceted search URL, post-scrape enrichment, run summary).
+The cf/agent suite covers the wall classifier (Cloudflare, Turnstile on an
+interstitial vs. on a content page, DataDome, rate-limit, authwall), clearance
+cache scoping and TTL, TLS target selection, the FlareSolverr client, the fetch
+ladder order, snapshot formatting, ref staleness, the MCP dispatcher, and the
+scraper's block classification.
+
+---
+
+## 15. Stealth stack: Cloudflare and agent browsers (v6.0)
+
+Three surfaces. `cf_bypass.py` is the wall layer, `agent_browser.py` is the
+agent-facing browser, `cli.py` exposes both.
+
+### 15.1 The tier ladder (`cf_bypass.TieredFetcher`)
+
+Cheapest first; the first tier that returns a non-walled page wins.
+
+| Tier | What it proves | Cost |
+| --- | --- | --- |
+| clearance cache | a cookie from a previous solve for this exact domain + proxy + UA | free |
+| `curl_cffi` | real Chrome/Firefox TLS (JA3/JA4), HTTP/2, header order | one HTTP request |
+| FlareSolverr | an external headless Chrome already dedicated to solving | sidecar call |
+| stealth browser | patchright/camoufox actually rendering the JS challenge | browser launch |
+| `urllib` | nothing — last resort with coherent headers | one request |
+
+```python
+from cf_bypass import TieredFetcher
+
+result = TieredFetcher(proxy="http://user:pass@host:port").fetch("https://site/")
+if result.ok:
+    print(result.tier, result.status, len(result.html))
+else:
+    print(result.challenge.verdict, result.error)
+```
+
+Clearance cookies are keyed on `domain | proxy | UA`. That is deliberate:
+`cf_clearance` is bound to the IP that solved it, so replaying it from a
+rotated proxy is worse than sending no cookie at all. TTL defaults to 30 min
+(`CF_CLEARANCE_TTL_SECONDS`).
+
+### 15.2 The classifier
+
+`classify_page(url, html, headers, status)` returns a `Challenge` with a
+verdict, confidence and the markers that fired:
+
+`cloudflare`, `turnstile`, `bot_wall` (DataDome / PerimeterX / Akamai /
+Incapsula), `rate_limit`, `authwall`, `captcha`, `js_required`, `none`.
+
+Each verdict maps to the scraper's `_block_reason` through
+`block_reason_for()`. Two details that matter:
+
+* A Turnstile widget on a **content page** (login form, demo page) is an in-page
+  captcha, not an edge wall. It is only `turnstile` when the document around it
+  is an interstitial (CF challenge scripts, "verify you are human", or a tiny
+  page). Otherwise the page is readable and must not trigger a solver wait.
+* An empty 403 is almost always an edge block, even with no body to match on.
+
+An interactive Turnstile cannot always be clicked by a machine. The solver
+tries the checkbox twice and also accepts a solved `cf-turnstile-response`
+token as success. In a headed run (`HEADLESS = False`, the default) a wall that
+survives that hands off to a human: the run pauses with a log line telling you
+to click the challenge, waits `CF_MANUAL_TIMEOUT` seconds, and continues the
+moment the page is clean. That is the honest bypass — the thing the wall is
+designed to require.
+
+### 15.3 Engine ladder
+
+`launch_stealth_browser(engine="auto")` tries **patchright → camoufox →
+playwright**, each in isolation, and returns a `BrowserHandle` that owns both
+the browser and the driver that must stop after it.
+
+```python
+handle = await launch_stealth_browser(headless=True, proxy={"server": "http://..."})
+browser = handle.browser
+# ...
+await handle.close()     # idempotent, guards every step
+```
+
+`config.BROWSER_ENGINE` pins one engine. `config.BROWSER_CHANNEL = "chrome"`
+drives the installed real Chrome instead of the bundled Chromium build, which
+closes most of the fingerprint gap.
+
+Optional once per machine:
+
+```bash
+patchright install chromium     # patchright's own patched build
+camoufox fetch                  # ~150 MB Firefox fork
+```
+
+### 15.4 Agent browser (`agent_browser.py`)
+
+`BrowserSession` is the async API; `AgentBrowserServer` is the MCP server;
+`TOOL_SPECS` + `dispatch()` is the function-calling API. All three drive the
+same actions.
+
+```python
+from agent_browser import BrowserSession
+
+async with BrowserSession(headless=True) as session:
+    await session.goto("https://example.com")
+    snap = await session.snapshot()          # roles, names, [ref=eN]
+    print(snap["snapshot"])
+    await session.click(ref="e7")             # verified against the live DOM
+    print((await session.extract())["text"])
+```
+
+Snapshot lines look like:
+
+```
+- heading "Jane Doe" [level=1] [ref=e1]
+  - link "Contact info" [href=/in/jane] [ref=e2]
+- textbox "Search" value="recruiters" [ref=e3]
+- button "Search" [ref=e4]
+```
+
+Refs are re-assigned on every snapshot and re-verified on every action: a stale
+ref raises `ToolError` ("take a new snapshot") instead of clicking whatever
+element inherited the position. That is the whole safety story of agent-driven
+browsers, and it is why the surface is refs, not coordinates.
+
+The 17 MCP tools: `browser_session`, `browser_navigate`, `browser_snapshot`,
+`browser_find`, `browser_click`, `browser_type`, `browser_press`,
+`browser_hover`, `browser_select`, `browser_scroll`, `browser_extract`,
+`browser_screenshot`, `browser_wait`, `browser_evaluate`, `browser_cookies`,
+`browser_solve`, `browser_close`.
+
+### 15.5 Commands
+
+```bash
+python cli.py fetch https://example.com --json          # ladder only
+python cli.py fetch https://example.com --browser       # allow the browser tier
+python cli.py browser --url https://example.com --snapshot
+python cli.py browser --url https://example.com --extract --screenshot out.png
+python cli.py mcp-browser --headless                    # MCP over stdio
+python cli.py doctor                                    # engines + curl_cffi report
+```
+
+MCP client entry (absolute paths are yours):
+
+```json
+{"mcpServers": {"linkedin-browser": {
+  "command": "D:\\Linkdin scrapper\\.venv\\Scripts\\python.exe",
+  "args": ["D:\\Linkdin scrapper\\agent_browser.py", "--serve", "--headless"]}}}
+```
+
+### 15.6 Config additions
+
+```python
+BROWSER_ENGINE = "auto"          # auto | patchright | camoufox | playwright
+BROWSER_CHANNEL = ""             # "chrome" to drive real Chrome
+CF_AUTO_SOLVE = True             # wait out walls instead of rotating instantly
+CF_SOLVE_TIMEOUT = 45            # seconds per wall
+CF_MANUAL_FALLBACK = True        # headed run: let the operator click the wall
+CF_MANUAL_TIMEOUT = 90           # seconds to wait for that manual click
+CF_CLEARANCE_FILE = "output/clearance.json"
+CF_CLEARANCE_TTL_SECONDS = 1800
+CF_SOLVERR_URL = ""              # e.g. "http://127.0.0.1:8191"
+AGENT_BROWSER_STATE_DIR = "session/agent_browser"
+```

@@ -103,6 +103,61 @@ python cli.py report --out output/report.html
 
 ---
 
+## 🧱 Stealth Stack (v6.0) — Cloudflare + agent browser
+
+The scraper is no longer "a Playwright script that hopes". Every page is
+classified, every wall has a ladder to climb, and the browser itself is now a
+first-class tool an AI agent can drive.
+
+| Capability | What it does | Module |
+| --- | --- | --- |
+| **Tiered fetch** | clearance cache → curl_cffi TLS impersonation → FlareSolverr → stealth browser → plain HTTP; stops at the first tier that clears | `cf_bypass.py` |
+| **Wall classifier** | names Cloudflare / Turnstile / DataDome / PerimeterX / Imperva / Akamai / rate-limit / authwall pages instead of guessing from one phrase | `cf_bypass.py` |
+| **Clearance cache** | stores `cf_clearance` / `__cf_bm` / Datadome cookies per domain **and per proxy IP and UA**, because a clearance bound to another IP is a flag, not a token | `cf_bypass.py` |
+| **Engine ladder** | patchright (deep-patched Chrome) → camoufox (spoofed Firefox) → stock Playwright, per-engine fallback, one teardown path | `cf_bypass.launch_stealth_browser` |
+| **Agent browser** | accessibility snapshots with `[ref=eN]` handles: navigate, click, type, press, scroll, select, hover, wait, extract text, screenshot, cookies, evaluate | `agent_browser.py` |
+| **MCP browser** | 17 tools over stdio so Claude Desktop / Cursor / any MCP client drives the browser | `agent_browser.py` |
+| **Function-calling specs** | `TOOL_SPECS` + `dispatch()` for agents that don't speak MCP | `agent_browser.py` |
+
+```bash
+# engines, once
+pip install -r requirements.txt
+playwright install chromium
+patchright install chromium
+camoufox fetch                    # optional, strongest fingerprint spoof
+
+# fetch through the ladder, no browser launch
+python cli.py fetch https://example.com --json
+
+# drive the agent browser
+python cli.py browser --url https://example.com --snapshot
+python cli.py browser --url https://example.com --extract --json
+
+# expose the browser to any MCP client
+python cli.py mcp-browser --headless
+```
+
+Register it (Claude Desktop / Cursor style; use your own absolute paths):
+
+```json
+{
+  "mcpServers": {
+    "linkedin-browser": {
+      "command": "D:\\Linkdin scrapper\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\Linkdin scrapper\\agent_browser.py", "--serve", "--headless"]
+    }
+  }
+}
+```
+
+Why refs instead of screenshots: the model reads a compact accessibility
+snapshot and acts on `[ref=e12]`; every action re-verifies that ref in the live
+DOM, so a stale ref fails loudly instead of clicking whatever moved into its
+place. Walls are classified on arrival and cleared before the page is reported
+ready.
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -128,6 +183,8 @@ linkedin-scraper/
 ├── storage.py                 ← SQLite store, cross-run dedupe, run history, event log
 ├── exporters.py               ← CSV / JSON / JSONL / Markdown / HTML report
 ├── behavior.py                ← Human pointer paths, wheel scrolling, warm-up
+├── cf_bypass.py               ← CF/bot-wall classifier, tiered fetch, clearance cache, engines
+├── agent_browser.py           ← Agent-native browser (a11y refs) + MCP server
 ├── mcp_server.py              ← Dependency-free MCP server (stdio) over the database
 ├── POWER_STACK.md             ← Full guide to the v5.0 features
 │
@@ -138,6 +195,7 @@ linkedin-scraper/
 ├── test_scraper_fixes.py      ← Behavioral tests (no browser needed)
 ├── test_login_flow.py         ← Drives the real login() against fakes
 ├── test_power_features.py     ← 58 tests for the v5.0 stack (no browser needed)
+├── test_cf_agent.py           ← 46 tests for the v6.0 stealth + agent browser
 │
 ├── output/                    ← Auto-created on first run
 │   ├── linkedin_results.xlsx  ← Your exported Excel data

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import List, Optional
 
 DEFAULT_EXPORT_BASE = "output/linkedin_results.xlsx"
-VERSION = "5.0.0"
+VERSION = "6.0.0"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -102,6 +102,34 @@ def build_parser() -> argparse.ArgumentParser:
     mcp = sub.add_parser("mcp", help="run the MCP server on stdio")
     mcp.add_argument("--db", default="")
     mcp.add_argument("--name", default="linkedin-scraper")
+
+    browser = sub.add_parser("browser", help="agent browser: navigate, snapshot, extract")
+    browser.add_argument("--url", default="", help="navigate here first")
+    browser.add_argument("--snapshot", action="store_true", help="print the accessibility snapshot")
+    browser.add_argument("--extract", action="store_true", help="print readable page text")
+    browser.add_argument("--screenshot", default="", help="save a full-page PNG here")
+    browser.add_argument("--solve", action="store_true", help="wait for a bot wall to clear")
+    browser.add_argument("--engine", default="auto",
+                         choices=["auto", "patchright", "camoufox", "playwright"])
+    browser.add_argument("--headed", action="store_true", help="show the browser window")
+    browser.add_argument("--proxy", default="")
+    browser.add_argument("--json", action="store_true")
+
+    browser_mcp = sub.add_parser("mcp-browser",
+                                 help="run the agent browser MCP server on stdio")
+    browser_mcp.add_argument("--engine", default="auto",
+                             choices=["auto", "patchright", "camoufox", "playwright"])
+    browser_mcp.add_argument("--headless", action="store_true", help="headless (default: headed)")
+    browser_mcp.add_argument("--proxy", default="")
+    browser_mcp.add_argument("--state-dir", default="")
+
+    fetch = sub.add_parser("fetch", help="fetch a URL through the Cloudflare bypass ladder")
+    fetch.add_argument("url")
+    fetch.add_argument("--proxy", default="")
+    fetch.add_argument("--solverr", default="", help="FlareSolverr base URL")
+    fetch.add_argument("--browser", action="store_true", help="allow the stealth-browser tier")
+    fetch.add_argument("--save", default="", help="write the HTML here")
+    fetch.add_argument("--json", action="store_true")
 
     doctor = sub.add_parser("doctor", help="check environment, credentials and data")
     doctor.add_argument("--json", action="store_true")
@@ -374,6 +402,76 @@ def cmd_mcp(args) -> int:
     return mcp_main(["--db", _db_path(args), "--name", args.name])
 
 
+def cmd_browser(args) -> int:
+    """Delegate to the agent browser CLI (same flags, one shared implementation)."""
+    from agent_browser import main as agent_main
+
+    argv: List[str] = ["--engine", args.engine]
+    if args.url:
+        argv += ["--url", args.url]
+    for flag in ("snapshot", "extract", "solve", "json"):
+        if getattr(args, flag):
+            argv.append(f"--{flag}")
+    if args.screenshot:
+        argv += ["--screenshot", args.screenshot]
+    if args.proxy:
+        argv += ["--proxy", args.proxy]
+    if not args.headed:
+        argv.append("--headless")
+    return agent_main(argv)
+
+
+def cmd_mcp_browser(args) -> int:
+    from agent_browser import AgentBrowserServer
+
+    server = AgentBrowserServer(engine=args.engine, headless=bool(args.headless),
+                                proxy=args.proxy,
+                                state_dir=args.state_dir or "session/agent_browser")
+    try:
+        return server.serve()
+    finally:
+        server.close()
+
+
+def cmd_fetch(args) -> int:
+    """Raw fetch through the CF ladder — the no-browser way to prove a wall."""
+    from cf_bypass import ClearanceCache, TieredFetcher
+
+    clearance_file = "output/clearance.json"
+    ttl = 1800.0
+    solverr = args.solverr
+    try:
+        from config import Config
+        config = Config()
+        clearance_file = getattr(config, "CF_CLEARANCE_FILE", clearance_file)
+        ttl = float(getattr(config, "CF_CLEARANCE_TTL_SECONDS", ttl))
+        solverr = solverr or getattr(config, "CF_SOLVERR_URL", "")
+    except Exception:
+        pass
+
+    fetcher = TieredFetcher(
+        proxy=args.proxy or None,
+        clearance=ClearanceCache(clearance_file, ttl),
+        solverr_url=solverr,
+        allow_browser=bool(args.browser),
+        headless=True,
+    )
+    result = fetcher.fetch(args.url)
+    if args.save and result.html:
+        target = Path(args.save)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(result.html, encoding="utf-8")
+        print(f"[fetch] saved -> {target}")
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2))
+    else:
+        print(f"[fetch] tier={result.tier} status={result.status} ok={result.ok} "
+              f"bytes={len(result.html)} wall={result.challenge.verdict}")
+        if result.error:
+            print(f"[fetch] {result.error}")
+    return 0 if result.ok else 1
+
+
 def cmd_db(args) -> int:
     from storage import Store
 
@@ -449,6 +547,31 @@ def run_doctor(db_path: str = "output/scraper.db") -> List[dict]:
             checks.append(_check(f"dep:{module}", True, "installed"))
         except Exception as exc:
             checks.append(_check(f"dep:{module}", False, f"missing ({exc.__class__.__name__})"))
+
+    # Stealth stack: which engines can actually launch, and whether the cheap
+    # TLS tier (curl_cffi) is present. Missing optional engines are warnings,
+    # not failures — the ladder falls back.
+    try:
+        from cf_bypass import capability_report
+        caps = capability_report()
+        checks.append(_check("stealth:engines", bool(caps["engines"]),
+                             ", ".join(caps["engines"]) or "none installed"))
+        checks.append(_check("stealth:curl_cffi", bool(caps["curl_cffi"]),
+                             "installed" if caps["curl_cffi"]
+                             else "not installed (pip install curl_cffi)", level="warn"))
+        checks.append(_check("stealth:camoufox", bool(caps["camoufox"]),
+                             "installed" if caps["camoufox"]
+                             else "not installed (optional, strongest fingerprint spoof)",
+                             level="warn"))
+    except Exception as exc:
+        checks.append(_check("stealth", False, f"{exc.__class__.__name__}: {exc}", level="warn"))
+
+    try:
+        import agent_browser  # noqa: F401  (import-safety check)
+        checks.append(_check("agent-browser", True,
+                             "ready (cli.py browser / mcp-browser)"))
+    except Exception as exc:
+        checks.append(_check("agent-browser", False, f"{exc.__class__.__name__}: {exc}"))
 
     browser_roots = []
     if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
@@ -558,6 +681,11 @@ def cmd_doctor(args) -> int:
 # ─────────────────────────────────────────────────────────────
 
 def main(argv: Optional[List[str]] = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):
@@ -570,6 +698,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "stats": cmd_stats,
         "report": cmd_report,
         "mcp": cmd_mcp,
+        "browser": cmd_browser,
+        "mcp-browser": cmd_mcp_browser,
+        "fetch": cmd_fetch,
         "doctor": cmd_doctor,
         "db": cmd_db,
     }

@@ -1,8 +1,11 @@
 # LinkedIn Recruiter Scraper - Dependencies
 # Install with: pip install -r requirements.txt
-# Then run: playwright install chromium
+# Then run:    playwright install chromium
+#              patchright install chromium   (stealth engine, v6.0)
+#              camoufox fetch                (optional fingerprint-spoofed Firefox)
 
-playwright==1.49.0
+# Core
+playwright>=1.65.0
 beautifulsoup4==4.12.3
 pandas==2.2.3
 openpyxl==3.1.5
@@ -10,3 +13,14 @@ lxml==5.3.0
 PyPDF2==3.0.1
 python-docx==1.1.2
 rich==13.7.0
+
+# v6.0 stealth stack
+# curl_cffi: real Chrome/Firefox TLS+HTTP2 fingerprints. Cheapest Cloudflare
+#            tier — no browser launch, no clearance cookie needed most of the time.
+# patchright: deep-patched Chromium; the primary browser engine. Its own
+#            browser build must be installed separately (command above).
+# camoufox:  Firefox fork that spoofs fingerprints at the C++ level; a fallback
+#            that often clears walls patchright cannot. Optional, ~150 MB fetch.
+curl_cffi>=0.17.0
+patchright>=1.64.0
+camoufox>=0.4.0

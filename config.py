@@ -272,6 +272,34 @@ class Config:
     
     # Save login cookies to avoid logging in every time (highly recommended)
     USE_PERSISTENT_SESSION: bool = True
+
+    # ─────────────────────────────────────────────
+    #  🧱 STEALTH ENGINE + BOT-WALL SURVIVAL (v6.0)
+    #  "auto" = patchright > camoufox > stock playwright, whichever is installed.
+    # ─────────────────────────────────────────────
+    BROWSER_ENGINE: str = "auto"
+    # Drive the real installed Chrome instead of the bundled Chromium build
+    # ("chrome" / "msedge" / ""). A real Chrome binary closes most of the
+    # fingerprint gap that bundled Chromium leaves open.
+    BROWSER_CHANNEL: str = ""
+
+    # Classify Cloudflare / Turnstile / DataDome walls on every page and wait
+    # for them to clear before calling the page blocked.
+    CF_AUTO_SOLVE: bool = True
+    CF_SOLVE_TIMEOUT: int = 45          # seconds to wait on one wall
+    # Headed runs: if the automatic solve fails, pause and let the operator
+    # click the challenge by hand (interactive Turnstile expects exactly that).
+    CF_MANUAL_FALLBACK: bool = True
+    CF_MANUAL_TIMEOUT: int = 90
+    CF_CLEARANCE_FILE: str = "output/clearance.json"
+    CF_CLEARANCE_TTL_SECONDS: int = 1800
+    # Optional FlareSolverr sidecar, e.g. "http://127.0.0.1:8191".
+    CF_SOLVERR_URL: str = ""
+    CF_ALLOW_FLARESOLVERR: bool = True
+
+    # Where the agent browser keeps its login state between MCP sessions.
+    AGENT_BROWSER_STATE_DIR: str = "session/agent_browser"
+
     
     # Deep Scraping Features
     SCRAPE_WORK_EXPERIENCE: bool = True

@@ -18,6 +18,15 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   (`LOGIN_CHALLENGE_TIMEOUT_SECONDS`, default 90) instead of blind 60s sleeps. Success is
   confirmed by URL + presence of `nav.global-nav`. `test_login_flow.py` drives the real
   `login()` decision tree against fakes — run both test files with the venv python.
+- Login DOM (2026-11): LinkedIn now renders generated ids (`_R_e3p...`), no `#username` /
+  `#password`, and two responsive forms; the visible pair is `input[type=email]` +
+  `input[type=password]`, and the submit control is a plain `button` whose text is exactly
+  "Sign in" (Microsoft/Apple buttons also contain "Sign in"). `_fresh_login` resolves through
+  `_wait_first()` and the `_LOGIN_*_SELECTORS` tuples (exact XPath first), never a single id.
+  Never reintroduce `wait_for_selector("#username")` — it silently hangs 20s per attempt.
+  Login relaunches the browser when the window was closed mid-retry; `run --challenge-timeout`
+  controls the 2FA/checkpoint wait (0 = config). A fresh browser always meets a checkpoint on
+  first login; complete it in the headed window and the run continues and persists the session.
 - The `*_diff.py` files (`linkedin_scraper_enhanced_diff.py`, `linkedin_scraper_pro_diff.py`,
   `config_enhanced_diff.py`) and `_diff.gitignore` are saved unified-diff patches for a
   never-merged "v4.0 Enhanced" line — not runnable modules; they reference modules

@@ -63,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-db", action="store_true", help="disable the SQLite store")
     run.add_argument("--db", default="", help="SQLite path (default: config.DATABASE_FILE)")
     run.add_argument("--headless", action="store_true", help="run Chromium headless")
+    run.add_argument("--challenge-timeout", type=int, default=0,
+                     help="seconds to wait for a 2FA/checkpoint page (0 = config)")
     run.add_argument("--formats", default="",
                      help="export formats: xlsx,csv,json,jsonl,md,html (default: config)")
     run.add_argument("--no-export", action="store_true", help="skip exporting at the end")
@@ -237,6 +239,8 @@ def cmd_run(args) -> int:
         config.SEARCH_MODE = args.mode
     if args.headless:
         config.HEADLESS = True
+    if getattr(args, "challenge_timeout", 0):
+        config.LOGIN_CHALLENGE_TIMEOUT_SECONDS = int(args.challenge_timeout)
     if args.db:
         config.DATABASE_FILE = args.db
     if args.no_db:

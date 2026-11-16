@@ -861,6 +861,74 @@ class LinkedInScraper:
         logger.error("❌ Bot wall was not cleared in time.")
         return False
 
+    # LinkedIn's login markup is generated per render (ids like _R_e3p...),
+    # so ids and names are unreliable. These lists go most-specific first and
+    # `_wait_first` picks the first *visible* match.
+    _LOGIN_EMAIL_SELECTORS = (
+        '#username',
+        'input[name="session_key"]',
+        'input[autocomplete*="username"]',
+        'input[type="email"]',
+    )
+    _LOGIN_PASSWORD_SELECTORS = (
+        '#password',
+        'input[name="session_password"]',
+        'input[autocomplete="current-password"]',
+        'input[type="password"]',
+    )
+    _LOGIN_SUBMIT_SELECTORS = (
+        'xpath=//button[normalize-space(.)="Sign in"]',
+        'button:text-is("Sign in")',
+        'button[type="submit"]',
+        'button[aria-label="Sign in"]',
+        'button:has-text("Sign in")',
+    )
+
+    async def _wait_first(self, selectors, timeout: int = 20000):
+        """First *visible* element among ``selectors``, waiting up to timeout.
+
+        Playwright's ``wait_for_selector`` with a selector list can return a
+        hidden duplicate (LinkedIn renders two responsive login forms), which is
+        exactly how a login dies on a working page. A locator scan checks
+        visibility per match. Fake pages without ``locator`` fall back to the
+        old single-selector behaviour so the login tests keep driving the real
+        decision tree.
+        """
+        factory = getattr(self.page, "locator", None)
+        if factory is None:
+            return await self.page.wait_for_selector(selectors[0], timeout=timeout)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout / 1000.0)
+        while loop.time() < deadline:
+            for selector in selectors:
+                try:
+                    locator = factory(selector)
+                    count = await locator.count()
+                except Exception:
+                    continue
+                for index in range(min(count, 6)):
+                    item = locator.nth(index)
+                    try:
+                        if await item.is_visible():
+                            return item
+                    except Exception:
+                        continue
+            await asyncio.sleep(0.25)
+        raise TimeoutError(f"no visible element for {selectors}")
+
+    def _page_closed(self) -> bool:
+        """True when the page/browser died (closed window, crash, killed proxy)."""
+        page = self.page
+        if page is None:
+            return True
+        checker = getattr(page, "is_closed", None)
+        if checker is None:          # fake pages in tests
+            return False
+        try:
+            return bool(checker())
+        except Exception:
+            return True
+
     async def login(self) -> bool:
         """
         Log in to LinkedIn. Attack order:
@@ -910,6 +978,14 @@ class LinkedInScraper:
                 backoff = random.uniform(15, 30) * attempt
                 logger.warning(f"⏳ Login retry {attempt}/{max_attempts} in {backoff:.0f}s...")
                 await asyncio.sleep(backoff)
+                if self._page_closed():
+                    logger.warning("Browser window was closed — relaunching before retry...")
+                    await self._shutdown_browser()
+                    try:
+                        await self._launch_browser()
+                    except Exception as exc:
+                        logger.error(f"❌ Relaunch for login retry failed ({exc.__class__.__name__}: {exc}).")
+                        return False
         self._record_login(False, "retries_exhausted")
         return False
 
@@ -925,19 +1001,20 @@ class LinkedInScraper:
             )
             await human_delay(3, 5)
 
-            email_input = await self.page.wait_for_selector("#username", timeout=20000)
+            email_input = await self._wait_first(self._LOGIN_EMAIL_SELECTORS)
             await email_input.click()
             await human_delay(0.5, 1.5)
             await self._type_like_human(email_input, self.current_account['email'])
             await human_delay(0.8, 1.5)
 
-            password_input = await self.page.wait_for_selector("#password")
+            password_input = await self._wait_first(self._LOGIN_PASSWORD_SELECTORS)
             await password_input.click()
             await human_delay(0.3, 0.8)
             await self._type_like_human(password_input, self.current_account['password'])
             await human_delay(0.5, 1.5)
 
-            await self.page.click('button[type="submit"]')
+            submit = await self._wait_first(self._LOGIN_SUBMIT_SELECTORS)
+            await submit.click()
 
             try:
                 await self.page.wait_for_load_state("domcontentloaded", timeout=20000)
@@ -955,10 +1032,12 @@ class LinkedInScraper:
             logger.info(f"   Post-login URL: {url}")
 
             # Credentials rejected — surface LinkedIn's own message instead of guessing.
-            if "#username" in url or ("login" in url and await self.page.query_selector("#error-for-password, .alert, .form__error")):
+            error_selector = ('#error-for-password, .alert, .form__error, '
+                              '[role="alert"], .artdeco-inline-feedback--error')
+            if "#username" in url or ("login" in url and await self.page.query_selector(error_selector)):
                 error_text = await self.page.evaluate(
                     """() => {
-                        const el = document.querySelector('#error-for-password, .alert, .form__error');
+                        const el = document.querySelector('#error-for-password, .alert, .form__error, [role="alert"], .artdeco-inline-feedback--error');
                         return el ? el.textContent.trim() : '';
                     }"""
                 )
@@ -997,8 +1076,14 @@ class LinkedInScraper:
 
     async def _type_like_human(self, element, text: str):
         """Type character by character to mimic human typing."""
+        keyboard = getattr(self.page, "keyboard", None)
+        if keyboard is None:
+            for char in text:
+                await element.type(char, delay=random.randint(50, 200))
+            return
         for char in text:
-            await element.type(char, delay=random.randint(50, 200))
+            await keyboard.type(char)
+            await asyncio.sleep(random.uniform(0.05, 0.18))
 
     # ─────────────────────────────────────────────
     #  SEARCH — JOBS (NEW)

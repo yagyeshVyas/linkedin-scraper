@@ -14,8 +14,14 @@ import linkedin_scraper as L
 
 
 class FakeElement:
+    def __init__(self):
+        self.selector = ""
+
     async def click(self):
-        pass
+        # LinkedIn navigates when the submit control is clicked.
+        if "submit" in self.selector or "Sign in" in self.selector:
+            if self.page.stages:
+                self.page.url = self.page.stages.pop(0)
 
     async def type(self, char, delay=0):
         self.page.typed += 1
@@ -64,6 +70,7 @@ class FakePage:
             raise TimeoutError("selector timed out")
         el = FakeElement()
         el.page = self
+        el.selector = selector
         return el
 
     async def click(self, selector):

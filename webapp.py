@@ -336,6 +336,12 @@ def build_run_args(payload: Dict[str, Any]) -> List[str]:
     max_profiles = _clean_int(payload.get("max_profiles"), 0, 0, 10000)
     if max_profiles:
         args += ["--max-profiles", str(max_profiles)]
+    for key, flag, top in (("profiles_per_day", "--profiles-per-day", 10000),
+                           ("walls_per_day", "--walls-per-day", 100),
+                           ("runtime_minutes", "--runtime-minutes", 1440)):
+        value = _clean_int(payload.get(key), 0, 0, top)
+        if value:
+            args += [flag, str(value)]
 
     # Mode-specific facets. Values are validated/clamped downstream by the CLI
     # and the URL builders; here we only keep them bounded.

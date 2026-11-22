@@ -551,6 +551,47 @@ def test_stealth_script_renders_with_real_fingerprint():
     assert rendered.count("{") == rendered.count("}"), "unbalanced JS braces"
 
 
+def test_people_paging_stops_when_a_page_adds_nothing_new():
+    """LinkedIn repeats results across pages; the loop must stop on "no new
+    URLs", not keep spending page loads (and quota) on duplicates."""
+    class PagingPage:
+        def __init__(self):
+            self.url = "https://www.linkedin.com/search/results/people/?page=1"
+            self.gotos = 0
+
+        async def goto(self, *args, **kwargs):
+            self.gotos += 1
+
+        async def wait_for_selector(self, *args, **kwargs):
+            return None
+
+        async def content(self):
+            return "<html><body>results</body></html>"
+
+        async def eval_on_selector_all(self, selector, script):
+            return ["https://www.linkedin.com/in/jane",
+                    "https://www.linkedin.com/in/john"]
+
+        async def evaluate(self, *args, **kwargs):
+            return None
+
+    saved = (L.human_delay, L.random_scroll)
+    L.human_delay = _noop
+    L.random_scroll = _noop
+    try:
+        cfg = Config()
+        cfg.MAX_PAGES_PER_COMPANY = 5
+        scraper = LinkedInScraper(cfg)
+        page = PagingPage()
+        scraper.page = page
+        urls = asyncio.run(scraper.search_people("Acme", "Recruiter"))
+        assert sorted(urls) == ["https://www.linkedin.com/in/jane",
+                                "https://www.linkedin.com/in/john"]
+        assert page.gotos == 2, "must fetch page 2, then stop on zero new URLs"
+    finally:
+        L.human_delay, L.random_scroll = saved
+
+
 def test_block_detection_classifies_pages():
     """_check_page_block_status must recognise each block family and record
     why, so recovery/telemetry can act on the right reason."""
@@ -1168,6 +1209,7 @@ if __name__ == "__main__":
                test_fingerprint_profiles_are_coherent,
                test_stealth_script_renders_with_real_fingerprint,
                test_block_detection_classifies_pages,
+               test_people_paging_stops_when_a_page_adds_nothing_new,
                test_recover_from_block_is_bounded,
                test_rotate_identity_teardown_and_failure_paths,
                test_progress_is_atomic_and_corruption_tolerant,

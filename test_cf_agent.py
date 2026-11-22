@@ -56,6 +56,10 @@ def _headers(**kwargs):
     return dict(kwargs)
 
 
+async def _noop(*args, **kwargs):
+    return None
+
+
 # ─────────────────────────────────────────────────────────────
 #  Classification
 # ─────────────────────────────────────────────────────────────
@@ -471,6 +475,9 @@ class _FakePage:
     async def content(self):
         return self._html
 
+    async def goto(self, *args, **kwargs):
+        return None
+
 
 def _scraper_with(page, **overrides):
     from config import Config
@@ -538,6 +545,186 @@ class _TokenPage(_FakePage):
 def test_solve_challenge_accepts_solved_token():
     page = _TokenPage("https://x", CF_INTERSTITIAL)
     assert asyncio.run(solve_challenge(page, timeout=2, poll=0.2)) is True
+
+
+# ─────────────────────────────────────────────────────────────
+#  v7.4 hardening: clearance replay, header walls, wall gates
+# ─────────────────────────────────────────────────────────────
+
+def test_classify_cf_mitigated_header_on_200():
+    """``cf-mitigated: challenge`` is a wall even on a 200 with a clean body."""
+    challenge = classify_page("https://x", CLEAN_PAGE, {"cf-mitigated": "challenge"}, 200)
+    assert challenge.verdict == cf_bypass.CLOUDFLARE and challenge.hard
+
+
+def test_playwright_cookies_use_registrable_domain():
+    payload = cf_bypass.playwright_cookies(
+        "https://www.linkedin.com/in/x", {"cf_clearance": "abc", "": "dropped"})
+    assert len(payload) == 1
+    assert payload[0]["domain"] == ".linkedin.com"
+    assert payload[0]["secure"] and payload[0]["httpOnly"]
+
+
+def test_playwright_cookies_require_host_and_jar():
+    assert cf_bypass.playwright_cookies("https://x", {}) == []
+    assert cf_bypass.playwright_cookies("", {"cf_clearance": "a"}) == []
+
+
+def test_cookie_domain_handles_ips_and_multi_part_suffixes():
+    assert cf_bypass._cookie_domain("127.0.0.1") == "127.0.0.1"
+    assert cf_bypass._cookie_domain("localhost") == "localhost"
+    assert cf_bypass._cookie_domain("www.linkedin.com") == ".linkedin.com"
+    assert cf_bypass._cookie_domain("www.bbc.co.uk") == ".bbc.co.uk"
+    payload = cf_bypass.playwright_cookies("http://127.0.0.1:8765/x", {"cf_clearance": "a"})
+    assert payload[0]["domain"] == "127.0.0.1"
+
+
+def test_retry_pass_recovers_a_dead_browser_once():
+    import linkedin_scraper as L
+
+    saved = L.human_delay
+    L.human_delay = _noop
+    try:
+        scraper = _scraper_with(_FakePage("https://www.linkedin.com/in/x", CLEAN_PAGE))
+        scraper.failed_urls = [{"url": "https://www.linkedin.com/in/a",
+                                "company": "", "title": ""}]
+        scraper._browser_closed = True
+        recoveries = []
+
+        async def fake_recover():
+            recoveries.append(True)
+            return True
+
+        async def fake_scrape(url, **kwargs):
+            return None
+
+        scraper._recover_closed_browser = fake_recover
+        scraper.scrape_profile = fake_scrape
+        assert asyncio.run(scraper._retry_failed_profiles()) == 0
+        assert recoveries == [True], "the retry pass must relaunch a dead browser once"
+    finally:
+        L.human_delay = saved
+
+
+class _CookieContext:
+    def __init__(self, jar):
+        self.jar = dict(jar)
+
+    async def cookies(self):
+        return [{"name": name, "value": value} for name, value in self.jar.items()]
+
+
+class _ClearanceThenCleanPage(_FakePage):
+    """Walled document whose context already holds a clearance cookie."""
+
+    def __init__(self):
+        super().__init__("https://x", CF_INTERSTITIAL)
+        self.context = _CookieContext({"cf_clearance": "edge-token"})
+        self.reloads = 0
+
+    async def reload(self, **kwargs):
+        self.reloads += 1
+        self._html = CLEAN_PAGE
+
+
+def test_solve_challenge_reloads_when_clearance_lands():
+    page = _ClearanceThenCleanPage()
+    assert asyncio.run(solve_challenge(page, timeout=2, poll=0.1)) is True
+    assert page.reloads == 1, "a clearance cookie must trigger exactly one reload"
+
+
+class _SeededContext:
+    def __init__(self):
+        self.added = []
+
+    async def add_cookies(self, payload):
+        self.added.extend(payload)
+
+    async def cookies(self):
+        return [{"name": "cf_clearance", "value": "fresh-edge"},
+                {"name": "li_at", "value": "session-secret"}]
+
+
+def test_scraper_seeds_and_persists_clearance():
+    with tempfile.TemporaryDirectory() as tmp:
+        scraper = _scraper_with(_FakePage("https://www.linkedin.com/in/x", CLEAN_PAGE))
+        scraper.clearance = ClearanceCache(str(Path(tmp) / "clearance.json"), ttl=600)
+        scraper.clearance.put("https://www.linkedin.com", {"cf_clearance": "seed"},
+                              proxy=None, user_agent="UA")
+        scraper.context = _SeededContext()
+        scraper._active_user_agent = "UA"
+
+        assert asyncio.run(scraper._seed_clearance()) == 1
+        assert scraper.context.added[0]["domain"] == ".linkedin.com"
+        assert asyncio.run(scraper._persist_clearance()) == 1
+
+        jar = scraper.clearance.get("https://www.linkedin.com", None, "UA")
+        assert jar["cf_clearance"] == "fresh-edge"
+        assert "li_at" not in jar, "only clearance cookies may be cached"
+
+
+def test_profile_wall_fails_instead_of_saving_an_empty_record():
+    import linkedin_scraper as L
+
+    saved = (L.human_delay, L.random_scroll)
+    L.human_delay = _noop
+    L.random_scroll = _noop
+    try:
+        page = _FakePage("https://www.linkedin.com/in/x", CF_INTERSTITIAL)
+        scraper = _scraper_with(page, CF_AUTO_SOLVE=False)
+        profile = asyncio.run(scraper.scrape_profile(
+            "https://www.linkedin.com/in/x", search_company="Acme", job_title="Recruiter"))
+        assert profile is None
+        assert not scraper.results, "a walled page must never become a record"
+        assert scraper.failed_urls[0]["url"].endswith("/in/x")
+        assert scraper._block_reason == "cloudflare"
+    finally:
+        L.human_delay, L.random_scroll = saved
+
+
+def test_session_break_survives_dead_browser():
+    class _DeadPage:
+        url = "https://www.linkedin.com/feed/"
+
+        async def goto(self, *args, **kwargs):
+            raise RuntimeError("Target page, context or browser has been closed")
+
+    scraper = _scraper_with(_DeadPage())
+    scraper.config.MIN_SESSION_BREAK_SECONDS = 1
+    scraper.config.MAX_SESSION_BREAK_SECONDS = 1
+    calls = []
+
+    async def fake_recover():
+        calls.append(True)
+        return True
+
+    scraper._recover_closed_browser = fake_recover
+    asyncio.run(scraper._take_session_break())  # must not raise
+    assert calls == [True]
+
+
+def test_engine_escalation_walks_the_ladder():
+    import linkedin_scraper as L
+
+    original = L.available_engines
+    L.available_engines = lambda: ["playwright", "patchright", "camoufox"]
+    try:
+        scraper = _scraper_with(_FakePage("https://x", CLEAN_PAGE))
+        scraper.engine_handle = type("_Handle", (), {"engine": "playwright"})()
+        assert scraper._escalate_engine() == "patchright"
+        assert scraper._prefer_scriptable_override is False
+        assert scraper._escalate_engine() == "camoufox"
+        assert scraper._escalate_engine() == ""
+    finally:
+        L.available_engines = original
+
+
+def test_cf_hardening_knobs_default_on():
+    from config import Config
+
+    config = Config()
+    assert config.CF_SEED_CLEARANCE is True
+    assert config.CF_ENGINE_ESCALATION is True
 
 
 # ─────────────────────────────────────────────────────────────
@@ -610,6 +797,17 @@ def main():
         test_solve_challenge_clean_page_returns_immediately,
         test_solve_challenge_walled_page_times_out,
         test_solve_challenge_accepts_solved_token,
+        test_classify_cf_mitigated_header_on_200,
+        test_playwright_cookies_use_registrable_domain,
+        test_playwright_cookies_require_host_and_jar,
+        test_cookie_domain_handles_ips_and_multi_part_suffixes,
+        test_retry_pass_recovers_a_dead_browser_once,
+        test_solve_challenge_reloads_when_clearance_lands,
+        test_scraper_seeds_and_persists_clearance,
+        test_profile_wall_fails_instead_of_saving_an_empty_record,
+        test_session_break_survives_dead_browser,
+        test_engine_escalation_walks_the_ladder,
+        test_cf_hardening_knobs_default_on,
         test_cli_has_browser_and_fetch_commands,
         test_cli_doctor_reports_stealth,
     ]

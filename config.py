@@ -141,7 +141,7 @@ class Config:
     # Path to your resume (PDF or DOCX) for extracting keywords
     RESUME_FILE_PATH: str = "my_resume.pdf"
 
-    MAX_JOB_PAGES: int = 5  # Max search result pages per keyword
+    MAX_JOB_PAGES: int = 10  # Max search result pages per keyword (25 cards/page)
 
 
     # ══════════════════════════════════════════════
@@ -160,7 +160,7 @@ class Config:
 
     CANDIDATE_TITLE_FILTER: str = ""  # Optional: filter by current title (e.g. "Engineer")
 
-    MAX_CANDIDATE_PAGES: int = 5  # Max pages per skill search
+    MAX_CANDIDATE_PAGES: int = 10  # Max pages per skill search (10 results/page)
 
 
     # ══════════════════════════════════════════════
@@ -223,7 +223,15 @@ class Config:
     MIN_SESSION_BREAK_SECONDS: int    = 60
     MAX_SESSION_BREAK_SECONDS: int    = 180
     BREAK_EVERY_N_REQUESTS: int       = 15
-    MAX_PAGES_PER_COMPANY: int        = 5
+    # People search: 10 results per page. LinkedIn stops serving beyond page
+    # 100; a free account usually sees ~10 usable pages.
+    MAX_PAGES_PER_COMPANY: int        = 10
+
+    # Timer-based full identity rotation (teardown + relaunch + re-login).
+    # 0 = never on a timer; rotate only when a wall/block actually demands it.
+    # The old behaviour (every UA_ROTATE_EVERY_N requests) relaunched the
+    # browser mid-run and met a fresh-login checkpoint each time.
+    RELAUNCH_EVERY_N_REQUESTS: int    = 0
 
     # Set True for a quick smoke run on TEST_COMPANIES (2) instead of the full
     # FORTUNE_500_COMPANIES list (25 × titles = hundreds of searches).
@@ -237,7 +245,7 @@ class Config:
     #  🛡️  ANTI-BLOCK SETTINGS
     # ══════════════════════════════════════════════
 
-    MAX_DAILY_SEARCHES: int     = 80      # Stop after this many searches per day
+    MAX_DAILY_SEARCHES: int     = 200     # Stop after this many searches per day
     ROTATE_USER_AGENT: bool     = True    # Rotate UA every few requests
     UA_ROTATE_EVERY_N: int      = 10      # Rotate user agent every N requests
     ADAPTIVE_THROTTLE: bool     = True    # Auto-increase delays on errors
@@ -250,7 +258,7 @@ class Config:
     # How many block/authwall/captcha events a single run may auto-recover
     # from (rotate identity + re-login + resume) before giving up. Protects
     # against burning an account when LinkedIn insists on a manual challenge.
-    MAX_BLOCK_RECOVERIES: int = 3
+    MAX_BLOCK_RECOVERIES: int = 6
 
     # Randomize viewport, locale/timezone coherence and client hints every
     # launch instead of always looking like the same 1920x1080 machine.
@@ -296,6 +304,13 @@ class Config:
     CF_MANUAL_TIMEOUT: int = 90
     CF_CLEARANCE_FILE: str = "output/clearance.json"
     CF_CLEARANCE_TTL_SECONDS: int = 1800
+    # Replay solved cf_clearance cookies into every fresh context, scoped per
+    # (domain, proxy, UA). Off = every navigation meets the wall again.
+    CF_SEED_CLEARANCE: bool = True
+    # Repeated walls on one identity climb the engine ladder
+    # (playwright -> patchright -> camoufox) instead of retrying the same
+    # binary against the same wall.
+    CF_ENGINE_ESCALATION: bool = True
     # Optional FlareSolverr sidecar, e.g. "http://127.0.0.1:8191".
     CF_SOLVERR_URL: str = ""
     CF_ALLOW_FLARESOLVERR: bool = True
@@ -336,9 +351,9 @@ class Config:
     #  A seatbelt, not a guarantee: hard budgets and a wall circuit-breaker.
     # ─────────────────────────────────────────────
     SAFE_MODE: bool = True
-    SAFETY_MAX_WALLS_PER_DAY: int = 3
-    SAFETY_MAX_PROFILES_PER_DAY: int = 120
-    SAFETY_MAX_RUNTIME_MINUTES: int = 120
+    SAFETY_MAX_WALLS_PER_DAY: int = 5
+    SAFETY_MAX_PROFILES_PER_DAY: int = 300
+    SAFETY_MAX_RUNTIME_MINUTES: int = 180
     SAFETY_COOLDOWN_SECONDS: int = 90        # pause after a wall before rotating
     SAFETY_LEDGER_FILE: str = "output/safety.json"
 

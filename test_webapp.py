@@ -78,6 +78,45 @@ def test_build_run_args_mode_specific_facets():
     assert "--max-candidate-pages 2" in candidates
 
 
+def test_build_run_args_limits_and_daily_budgets():
+    args = " ".join(build_run_args({
+        "mode": "people", "companies": "Acme", "titles": "Recruiter",
+        "max_pages": 12, "profiles_per_day": 400, "walls_per_day": 9,
+        "runtime_minutes": 240,
+    }))
+    assert "--max-pages 12" in args
+    assert "--profiles-per-day 400" in args
+    assert "--walls-per-day 9" in args
+    assert "--runtime-minutes 240" in args
+
+
+def test_cli_page_flag_follows_the_active_mode():
+    import cli
+    from config import Config
+
+    parser = cli.build_parser()
+    for mode, attr, value in (("people", "MAX_PAGES_PER_COMPANY", 12),
+                              ("jobs", "MAX_JOB_PAGES", 7),
+                              ("candidates", "MAX_CANDIDATE_PAGES", 4)):
+        config = Config()
+        config.SEARCH_MODE = mode
+        args = parser.parse_args(["run", "--mode", mode, "--max-pages", str(value)])
+        cli.apply_run_limits(config, args)
+        assert getattr(config, attr) == value, (mode, attr)
+
+    config = Config()
+    config.SEARCH_MODE = "people"
+    args = parser.parse_args(["run", "--max-company-pages", "20",
+                              "--profiles-per-day", "400", "--walls-per-day", "9",
+                              "--runtime-minutes", "240", "--max-profiles", "250"])
+    cli.apply_run_limits(config, args)
+    assert config.MAX_PAGES_PER_COMPANY == 20
+    assert config.MAX_PROFILES_PER_RUN == 250
+    assert config.SAFETY_MAX_PROFILES_PER_DAY == 400
+    assert config.SAFETY_MAX_WALLS_PER_DAY == 9
+    assert config.SAFETY_MAX_RUNTIME_MINUTES == 240
+
+
 def test_clean_int_clamps():
     assert _clean_int("12") == 12
     assert _clean_int("999999") == 100000
@@ -257,6 +296,8 @@ def main():
         test_build_run_args_full_form,
         test_build_run_args_rejects_unknown_mode,
         test_build_run_args_mode_specific_facets,
+        test_build_run_args_limits_and_daily_budgets,
+        test_cli_page_flag_follows_the_active_mode,
         test_clean_int_clamps,
         test_clean_int_custom_range,
         test_status_shape_with_empty_store,

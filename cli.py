@@ -92,9 +92,19 @@ def build_parser() -> argparse.ArgumentParser:
                      help="jobs mode: F,C,P,T,I comma list")
     run.add_argument("--easy-apply", action="store_true", help="jobs mode: easy apply only")
     run.add_argument("--max-pages", type=int, default=0,
-                     help="jobs mode: max result pages per keyword (0 = config)")
+                     help="max result pages per search, active mode "
+                          "(people: per company/title, jobs: per keyword)")
+    run.add_argument("--max-company-pages", type=int, default=0,
+                     help="people mode: max result pages per company/title")
     run.add_argument("--max-candidate-pages", type=int, default=0,
                      help="candidates mode: max pages per skill (0 = config)")
+    # Raise the daily seatbelt without disabling it (--unsafe still exists).
+    run.add_argument("--profiles-per-day", type=int, default=0,
+                     help="daily profile budget (0 = config default)")
+    run.add_argument("--walls-per-day", type=int, default=0,
+                     help="daily bot-wall budget (0 = config default)")
+    run.add_argument("--runtime-minutes", type=int, default=0,
+                     help="per-run time budget in minutes (0 = config default)")
 
     export = sub.add_parser("export", help="export stored records to one or more formats")
     export.add_argument("--format", default="all",
@@ -214,6 +224,37 @@ def _cmd_list(value: str, fallback: List[str]) -> List[str]:
     return items or list(fallback or [])
 
 
+def apply_run_limits(config, args) -> None:
+    """Map the run's paging/budget flags onto ``config``. Mode-aware.
+
+    ``--max-pages`` follows the active mode because the three searches page
+    differently; people mode previously had no CLI knob for its cap at all.
+    The three budget flags raise the daily seatbelt without disabling it.
+    """
+    mode = str(getattr(config, "SEARCH_MODE", "") or "").lower()
+    max_pages = int(getattr(args, "max_pages", 0) or 0)
+    if max_pages:
+        if mode == "people":
+            config.MAX_PAGES_PER_COMPANY = max(1, max_pages)
+        elif mode == "candidates":
+            config.MAX_CANDIDATE_PAGES = max(1, max_pages)
+        else:
+            config.MAX_JOB_PAGES = max(1, max_pages)
+    if getattr(args, "max_company_pages", 0):
+        config.MAX_PAGES_PER_COMPANY = max(1, int(args.max_company_pages))
+    if getattr(args, "max_candidate_pages", 0):
+        config.MAX_CANDIDATE_PAGES = max(1, int(args.max_candidate_pages))
+    for attr, key in (("profiles_per_day", "SAFETY_MAX_PROFILES_PER_DAY"),
+                      ("walls_per_day", "SAFETY_MAX_WALLS_PER_DAY"),
+                      ("runtime_minutes", "SAFETY_MAX_RUNTIME_MINUTES")):
+        value = int(getattr(args, attr, 0) or 0)
+        if value:
+            setattr(config, key, max(1, value))
+    max_profiles = int(getattr(args, "max_profiles", 0) or 0)
+    if max_profiles:
+        config.MAX_PROFILES_PER_RUN = max(1, max_profiles)
+
+
 def _db_path(args, config=None) -> str:
     if getattr(args, "db", ""):
         return args.db
@@ -295,10 +336,7 @@ def cmd_run(args) -> int:
         config.JOB_TYPES = _split_csv(args.job_types)
     if getattr(args, "easy_apply", False):
         config.JOB_EASY_APPLY = True
-    if getattr(args, "max_pages", 0):
-        config.MAX_JOB_PAGES = max(1, int(args.max_pages))
-    if getattr(args, "max_candidate_pages", 0):
-        config.MAX_CANDIDATE_PAGES = max(1, int(args.max_candidate_pages))
+    apply_run_limits(config, args)
 
     # Search filters (people mode) - empty flags keep the config values.
     for attr, value in (
@@ -346,9 +384,6 @@ def cmd_run(args) -> int:
     if not targets:
         print("[error] nothing to search - provide --companies/--keywords/--skills")
         return 2
-
-    if args.max_profiles:
-        config.MAX_PROFILES_PER_RUN = int(args.max_profiles)
 
     print(f"[run] mode={mode} targets={len(targets)} titles={len(titles)} "
           f"db={'off' if not config.ENABLE_DATABASE else config.DATABASE_FILE}")
@@ -766,6 +801,22 @@ def run_doctor(db_path: str = "output/scraper.db") -> List[dict]:
                              "installed" if caps["camoufox"]
                              else "not installed (optional, strongest fingerprint spoof)",
                              level="warn"))
+        # Solved edge clearances are the cheapest tier of all — report how many
+        # identities currently hold one.
+        try:
+            from cf_bypass import ClearanceCache
+            from config import Config as _Cfg
+            _c = _Cfg()
+            cache = ClearanceCache(getattr(_c, "CF_CLEARANCE_FILE", "output/clearance.json"),
+                                   float(getattr(_c, "CF_CLEARANCE_TTL_SECONDS", 1800)))
+            live = cache.prune()
+            held = len(cache._load())
+            checks.append(_check("stealth:clearance", True,
+                                 f"{held} live clearance set(s)"
+                                 + (f", {live} expired pruned" if live else "")))
+        except Exception as exc:
+            checks.append(_check("stealth:clearance", False,
+                                 f"{exc.__class__.__name__}: {exc}", level="warn"))
     except Exception as exc:
         checks.append(_check("stealth", False, f"{exc.__class__.__name__}: {exc}", level="warn"))
 

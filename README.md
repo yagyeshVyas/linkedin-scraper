@@ -28,12 +28,15 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 ## 📋 Table of Contents
 
 - [What It Does](#-what-it-does)
+- [Use Cases](#-use-cases)
 - [Power Stack (v5.0)](#-power-stack-v50)
 - [Project Structure](#-project-structure)
 - [Requirements](#-requirements)
 - [Installation](#-installation)
 - [Configuration](#-configuration)
 - [How to Run](#-how-to-run)
+- [Cloudflare Bypass (v7.4)](#-cloudflare-bypass-v74--how-a-wall-is-actually-cleared)
+- [Throughput & Limits (v7.5)](#-throughput--limits-v75)
 - [Proxy Support](#-proxy-support-free)
 - [Output](#-output)
 - [Live Dashboard & Session Health](#-live-dashboard--session-health)
@@ -42,6 +45,28 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 - [Tech Stack](#-tech-stack)
 
 ---
+
+## 🎯 Use Cases
+
+Pick the mode that matches the job. Every command is non-interactive and safe to
+script.
+
+| Goal | Mode | Example |
+| --- | --- | --- |
+| **Recruiter sourcing** — find people with a title at a target company | people | `python cli.py run --mode people --companies "Google,Stripe" --titles Recruiter --network S` |
+| **Talent mapping** — every recruiter across a list of companies | people | `python cli.py run --mode people --companies-file companies.txt --titles "Recruiter,Talent Acquisition" --max-pages 10` |
+| **Job market scan** — who is hiring for X right now | jobs | `python cli.py run --mode jobs --keywords "data engineer" --date-posted r604800 --workplace 2` |
+| **Skill search** — candidates whose profile mentions a stack | candidates | `python cli.py run --mode candidates --skills "Python,Kubernetes" --title-filter Engineer` |
+| **Resume-matched shortlist** | people | `python cli.py run --mode people ... --resume my_resume.pdf --min-score 65` |
+| **Refresh a saved pool** | export | `python cli.py export --source db --format all` |
+| **Pipe the pool into an agent** | mcp | `python cli.py mcp --db output/scraper.db` |
+| **Reach a Cloudflare-fronted page** | fetch | `python cli.py fetch https://target/jobs --browser --json` |
+| **Long unattended run** | people | `python cli.py run ... --profiles-per-day 400 --runtime-minutes 240` |
+
+Two rules that apply to every row:
+
+- `--dry-run` first on a new target — it logs in, loads one search, saves nothing.
+- Scraping is resumable: rerunning skips completed searches and known profiles.
 
 ## ✨ What It Does
 
@@ -57,6 +82,8 @@ Scraping LinkedIn may violate their [Terms of Service](https://www.linkedin.com/
 - 🛡️ Built-in **anti-detection** — stealth JS, human delays, session breaks, exponential backoff
 - 🔑 **Smart login** — restores your saved session, retries with backoff, polls through 2FA/checkpoints
 - 🧪 **`--dry-run`** — boots the browser, logs in, verifies one search, saves nothing
+- 🧱 **Cloudflare survival** — classifies the wall, clicks/waits for Turnstile, caches `cf_clearance` per proxy+UA, and replays it so one solve unlocks later pages (v7.4)
+- 🚀 **Adaptive paging** — dedupes across result pages, stops on "no new people", and exposes every page/budget ceiling as a CLI flag (v7.5)
 - 📈 **Live session health** — ban-risk score, error streaks, and daily search cap on the dashboard
 
 ---
@@ -167,6 +194,129 @@ snapshot and acts on `[ref=e12]`; every action re-verifies that ref in the live
 DOM, so a stale ref fails loudly instead of clicking whatever moved into its
 place. Walls are classified on arrival and cleared before the page is reported
 ready.
+
+---
+
+## 🧱 Cloudflare Bypass (v7.4) — how a wall is actually cleared
+
+The weak point was never the classifier — it was that a solved wall was thrown
+away. A clearance cookie is now a first-class asset: solved **once** per
+`(domain, proxy, UA)`, persisted to `output/clearance.json`, and replayed into
+every later browser context. The same cookie also unlocks the cheap `curl_cffi`
+tier, so a wall costs one solve, not one solve per page.
+
+### What happens on a wall, in order
+
+1. **Classify** the document *and* the response headers. `cf-mitigated: challenge`
+   is a wall even on a `200` with a clean body.
+2. **Replay** cached clearance into the context before the first navigation.
+   Replaying it from another exit IP or UA is refused by design — that is a
+   detection signal, not a shortcut.
+3. **Solve**: poll the page, click the Turnstile checkbox up to three times with
+   human-timed motion, accept a solved `cf-turnstile-response` token, and treat a
+   `cf_clearance` cookie appearing as proof — then reload once so the real
+   document is fetched instead of the interstitial already on the wire.
+4. **Human fallback** (headed runs only): pause and say what to click
+   (`CF_MANUAL_FALLBACK`, `CF_MANUAL_TIMEOUT`).
+5. **Verify** the page is actually clean before parsing, then **persist** the
+   refreshed clearance. A wall that will not clear on a profile becomes a
+   recorded failure — never a row with every field empty.
+6. **Escalate** on repeated walls: rotate proxy/fingerprint, and climb the engine
+   ladder `playwright → patchright → camoufox` (`CF_ENGINE_ESCALATION`).
+
+### Use it
+
+```bash
+# what can this machine do? (engines, curl_cffi, live clearance sets)
+python cli.py doctor
+
+# fetch a walled page through the whole ladder, browser tier allowed
+python cli.py fetch https://target.example/jobs --browser --json
+
+# optional sidecar: FlareSolverr does nothing but clear challenges
+python cli.py fetch https://target.example --solverr http://127.0.0.1:8191 --json
+
+# scrape normally; walls are handled inline, clearance is reused
+python cli.py run --mode people --companies "Acme" --titles Recruiter
+```
+
+### Knobs
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `CF_AUTO_SOLVE` | `True` | wait/click a solvable wall before declaring a block |
+| `CF_SOLVE_TIMEOUT` | `45` | seconds per wall attempt |
+| `CF_MANUAL_FALLBACK` | `True` | headed runs may ask a human to finish a Turnstile |
+| `CF_SEED_CLEARANCE` | `True` | replay solved cookies into fresh contexts |
+| `CF_CLEARANCE_TTL_SECONDS` | `1800` | how long a solved clearance is trusted |
+| `CF_ENGINE_ESCALATION` | `True` | climb the engine ladder after repeated walls |
+| `CF_SOLVERR_URL` | `""` | FlareSolverr base URL for the third tier |
+
+### What this does not do
+
+It does not solve an interactive challenge anonymously, and it cannot make a
+hard-blocked IP look like a resident. A headed run plus one manual click is the
+honest ceiling; anything beyond that is LinkedIn's decision, not a setting.
+
+---
+
+## 🚀 Throughput & Limits (v7.5)
+
+The tool used to throttle itself well below LinkedIn's own ceiling, and one
+setting actively broke runs: a full identity relaunch every 10 requests (teardown
+→ relaunch → re-login → fresh-login checkpoint). That cadence is gone —
+`RELAUNCH_EVERY_N_REQUESTS = 0` rotates **only** when a block demands it.
+
+### Defaults
+
+| Limit | Default | Notes |
+| --- | --- | --- |
+| People pages per company/title | **10** | LinkedIn serves up to ~100 pages; free accounts see ~10 |
+| Job pages per keyword | **10** | 25 cards per page |
+| Candidate pages per skill | **10** | 10 results per page |
+| Daily search page loads | **200** | also enforced by the safety ledger |
+| Block recoveries per run | **6** | rotate + re-login + resume |
+| Safety: walls / profiles / runtime | **5 / 300 / 180 min** | per day, persisted |
+
+### Override per run (no `--unsafe` needed)
+
+```bash
+python cli.py run --mode people --companies "Acme" --titles Recruiter \
+    --max-pages 12 \
+    --profiles-per-day 400 \
+    --walls-per-day 9 \
+    --runtime-minutes 240 \
+    --max-profiles 500
+```
+
+`--max-pages 12` (people = pages per company) · `--profiles-per-day 400` ·
+`--walls-per-day 9` · `--runtime-minutes 240` · `--max-profiles 500` (per run).
+
+`--max-pages` follows the active mode: people → company pages, candidates →
+skill pages, jobs → keyword pages. `--max-company-pages` is the explicit form.
+
+### Smarter paging
+
+LinkedIn repeats results across pages. Every search keeps a `seen` set, retries
+extraction once after a scroll, and stops only when a page adds **zero new**
+items — so quota is spent on new people, not duplicates. Jobs dedupe by card URL.
+
+### Where the run stops now
+
+- The daily ledger is spent (`wall budget`, `profile budget`, `runtime budget`) —
+  the loop stops cleanly instead of loading more searches to scrape nothing.
+- Recovery budget exhausted, or re-login after rotation failed.
+- `MAX_PROFILES_PER_RUN` reached.
+
+Everything scraped before the stop is exported and recorded; rerunning resumes.
+
+### Realistic expectations
+
+Raising page caps past ~10 mostly costs time, not yields: LinkedIn stops serving
+results. The safety budgets are a seatbelt, not a guarantee — 300 profiles/day is
+already aggressive on a real account, and no setting makes an account
+un-bannable. Use a secondary account, keep the pacing delays, and prefer
+`--dry-run` on a new target.
 
 ---
 

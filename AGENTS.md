@@ -89,9 +89,9 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   normalisation — keep it if you touch either side.
 - The dashboard table's sort coerces with `String(a[key] ?? "")`; without that, sorting any
   boolean/number column (open_to_work, follower_count, connection_count) throws.
-- Behavioral tests: `test_scraper_fixes.py` (33 tests), `test_login_flow.py` (5 tests),
+- Behavioral tests: `test_scraper_fixes.py` (34 tests), `test_login_flow.py` (5 tests),
   `test_power_features.py` (58 tests), `test_cf_agent.py` (46 tests), `test_brutal.py`
-  (54 tests), `test_webapp.py` (21 tests) and `test_safety.py` (14 tests) — run each with
+  (54 tests), `test_webapp.py` (23 tests) and `test_safety.py` (14 tests) — run each with
   `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite drives the
   real `login()` against fakes, the dashboard suite binds an ephemeral loopback port). No
   pytest in the venv — each file is a plain script with a `__main__` runner list; add new
@@ -269,7 +269,7 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   `--experience-levels`, `--workplace`, `--job-types`, `--easy-apply`, `--max-pages`,
   `--max-candidate-pages` (mapped onto config; `JOB_TYPES`/`JOB_EASY_APPLY` added to
   config and passed by `_build_job_filters`).
-- `test_webapp.py` (21 tests) boots the real handler on an ephemeral loopback port, so it
+- `test_webapp.py` (23 tests) boots the real handler on an ephemeral loopback port, so it
   covers HTTP without a browser. Run all SEVEN suites before claiming a change works.
 
 
@@ -311,6 +311,76 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   no unconverted braces — extend that test if you edit the script.
 - The Windows console (cp1252) can't print emoji from Python — a bare `print("✅ ...")`
   raises UnicodeEncodeError. Keep script prints ASCII or set `PYTHONIOENCODING=utf-8`.
+
+## Cloudflare hardening (v7.4, 2026-11)
+
+- **Clearance replay is the cheapest tier and now actually runs.** The scraper owns a
+  `ClearanceCache` (`output/clearance.json`, TTL `CF_CLEARANCE_TTL_SECONDS`) and seeds it into
+  every fresh context in `_launch_browser` via `_seed_clearance()`; `_persist_clearance()` is
+  called after login warm-up, after every solved wall (auto and manual) and after each clean
+  session break. The cache key stays `domain|proxy|UA` — a cookie minted on one exit IP is a
+  detection signal on another, so never "helpfully" relax the key.
+- `cf_bypass.playwright_cookies(url, jar)` builds `context.add_cookies()` payloads. Domain
+  derivation is `_cookie_domain()`: IPs/localhost stay literal (Playwright rejects `.0.1` for
+  `127.0.0.1` — that bug broke seeding), and multi-part suffixes (`bbc.co.uk`) resolve to
+  `.bbc.co.uk` instead of `.co.uk`. A solved `www.linkedin.com` cookie must be written as
+  `.linkedin.com` or subdomain navigations silently lose it.
+- `solve_challenge` now reacts to the cookie, not just the DOM: Turnstile token -> bounded
+  reloads, a clearance cookie appearing -> one reload to refetch the real document, up to
+  three human-timed clicks. A token still counts as success when reload is unavailable.
+- `classify_page` treats `cf-mitigated: challenge` as a wall **on any status**, including a
+  200 with a clean body. `_check_page_block_status` feeds it the last navigation's real
+  status/headers (`_last_response_status` / `_last_response_headers`, set in `_goto_page`).
+- Profile pages are wall-gated: `_clear_profile_wall()` runs before parsing and raises when a
+  wall will not clear, so the URL lands in `failed_urls` instead of being saved as a record
+  whose every field is empty. Do not remove that gate; a walled page parses cleanly and looks
+  exactly like a selector regression.
+- Crash safety: `_take_session_break()` and `_retry_failed_profiles()` recover a dead browser
+  (`_recover_closed_browser`) instead of letting `TargetClosedError` abort the run — the
+  2026-11 live log died exactly there. The retry pass recovers at most once, then abandons.
+- Engine escalation: after `_wall_streak >= 2` a rotation climbs
+  playwright -> patchright -> camoufox (`_escalate_engine`, `CF_ENGINE_ESCALATION`).
+  Escalating away from Playwright sets `_prefer_scriptable_override=False` because only stock
+  Playwright runs the injected fingerprint. `_wall_streak` resets on a clean page/login.
+- `TieredFetcher` changes: `_curl_attempt` is the single curl body (proxy restored), a hard
+  challenge with a cached cookie triggers one **cold** retry without the cookie, successful
+  harvests go back into the cache, `_respect_retry_after` waits out a sane `Retry-After`
+  between tiers, and `warm(url)` primes clearance without caring about the body.
+- Launch flags: `_LAUNCH_ARGS` gained first-run/noise-suppression switches and every launch
+  passes `ignore_default_args=["--enable-automation"]`. Removing that switch is free; keep it.
+- Knobs: `CF_SEED_CLEARANCE`, `CF_ENGINE_ESCALATION`. `cli.py doctor` now reports
+  `stealth:clearance` (live sets, expired pruned).
+- Live proof on 2026-11-21 (Playwright + installed Chromium, local CF-shaped server):
+  `solve_challenge` detected the cookie, reloaded to the real page, cached it, and a freshly
+  seeded context skipped the wall; the same run showed `TieredFetcher` tier 1 =
+  `browser:playwright`, tier 2 = `curl_cffi` on the cached cookie. `test_cf_agent.py` covers
+  the header wall, cookie domain rules, clearance seeding/persisting, the profile wall gate,
+  session-break survival, engine escalation and the dead-browser retry pass.
+
+## Throughput + limits (v7.5, 2026-11)
+
+- Defaults raised because they were throttling the tool well below LinkedIn's own ceiling:
+  `MAX_PAGES_PER_COMPANY` 5→10, `MAX_JOB_PAGES` 5→10, `MAX_CANDIDATE_PAGES` 5→10,
+  `MAX_DAILY_SEARCHES` 80→200, `MAX_BLOCK_RECOVERIES` 3→6, safety budgets
+  5 walls / 300 profiles / 180 min. They are ceilings, not targets; the pacing delays are
+  unchanged on purpose.
+- `--max-pages` is **mode-aware** (`cli.apply_run_limits`): people → `MAX_PAGES_PER_COMPANY`,
+  candidates → `MAX_CANDIDATE_PAGES`, jobs → `MAX_JOB_PAGES`. Before this, people mode had no
+  CLI knob for its page cap at all. `--max-company-pages` is explicit.
+- New budget flags raise the seatbelt without disabling it: `--profiles-per-day`,
+  `--walls-per-day`, `--runtime-minutes` (dashboard sends all three; People panel has a Pages
+  field, run settings have Profiles/day + Runtime).
+- Search paging is adaptive: each loop keeps a `seen` set, skips duplicates (LinkedIn repeats
+  results across pages), retries extraction once after a scroll, and stops only when a page
+  contributes **zero new** items. Jobs dedupe by card URL the same way.
+- Removed the timer-driven full identity rotation (`ROTATE_USER_AGENT % UA_ROTATE_EVERY_N`
+  used to tear down + relaunch + re-login mid-run, meeting a fresh-login checkpoint each
+  time). `RELAUNCH_EVERY_N_REQUESTS = 0` means never on a timer; rotation happens only when a
+  block demands it (`_recover_from_block`). Do not "restore" the old cadence.
+- `_safety_stop()` gates the outer company/keyword/skill loops. Previously a spent profile
+  budget only broke the profile loop and the run kept loading searches to scrape nothing.
+- `test_webapp.py` grew to 23 tests (limit flags/budgets) and `test_scraper_fixes.py` has the
+  adaptive-paging case. All seven suites must stay green.
 
 ## Dashboard preview
 

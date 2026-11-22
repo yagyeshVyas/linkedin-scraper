@@ -231,8 +231,15 @@ def classify_page(url: str = "", html: str = "", headers: Optional[dict] = None,
 
     cf = _hits(body, _CF_BODY)
     cf_headers = [h for h in _CF_HEADERS if h in head]
-    if "cf-mitigated: challenge" in head or "cf-chl-bypass" in head:
-        cf_headers.append("cf-mitigated")
+    # ``cf-mitigated: challenge`` is the edge saying "I challenged this
+    # request" and it arrives on any status, including a 200 that still
+    # carries the interstitial. Classify on the header alone.
+    if "cf-mitigated: challenge" in head:
+        return Challenge(CLOUDFLARE, 0.95, ["cf-mitigated: challenge"] + cf, status,
+                         _retry_after(_value_of(headers, "retry-after")),
+                         "Cloudflare managed challenge (edge header)")
+    if "cf-chl-bypass" in head:
+        cf_headers.append("cf-chl-bypass")
     if cf or (cf_headers and status in (403, 429, 503)):
         markers = cf + cf_headers
         confidence = 0.9 if cf else 0.6
@@ -611,17 +618,39 @@ class TieredFetcher:
         started = time.time()
         target = impersonate_for_user_agent(self.user_agent)
         jar = self.clearance.get(url, self.proxy, self.user_agent)
+        result = self._curl_attempt(crequests, url, headers, data, method, target, jar,
+                                    self.timeout, self.proxy)
+        # A stale/invalid clearance cookie is worse than none: Cloudflare reads
+        # it as a replay and re-challenges harder. Drop it and take one cold
+        # handshake with the same TLS profile.
+        if (not result.ok and jar and result.challenge.hard
+                and result.challenge.verdict in (CLOUDFLARE, TURNSTILE)):
+            retry = self._curl_attempt(crequests, url, headers, data, method, target, {},
+                                       self.timeout, self.proxy)
+            retry.error = retry.error or result.error
+            result = retry
+        if result.ok and result.cookies:
+            self.clearance.put(url, result.cookies, self.proxy, self.user_agent,
+                               engine="curl_cffi")
+        result.seconds = time.time() - started
+        return result
+
+    @staticmethod
+    def _curl_attempt(crequests, url: str, headers: Dict[str, str],
+                      data: Optional[bytes], method: str, target: str,
+                      jar: Dict[str, str], timeout: float,
+                      proxy: Optional[str] = None) -> FetchResult:
         try:
-            session = crequests.Session(impersonate=target, timeout=self.timeout)
+            session = crequests.Session(impersonate=target, timeout=timeout)
         except Exception:
             try:
-                session = crequests.Session(timeout=self.timeout)
+                session = crequests.Session(timeout=timeout)
             except Exception as exc:
                 return FetchResult(False, 0, url, "", {}, "curl_cffi", Challenge(NONE),
                                    error=f"{type(exc).__name__}: {exc}")
-        if self.proxy:
+        if proxy:
             try:
-                session.proxies = {"http": self.proxy, "https": self.proxy}
+                session.proxies = {"http": proxy, "https": proxy}
             except Exception:
                 pass
         merged = dict(headers)
@@ -629,15 +658,14 @@ class TieredFetcher:
             merged["Cookie"] = cookie_header(jar)
         try:
             response = session.request(method.upper(), url, headers=merged, data=data,
-                                       allow_redirects=True, timeout=self.timeout)
+                                       allow_redirects=True, timeout=timeout)
             html = response.text or ""
             status = int(response.status_code)
             response_headers = dict(response.headers or {})
             cookies = jar
         except Exception as exc:
             return FetchResult(False, 0, url, "", {}, "curl_cffi", Challenge(NONE),
-                               error=f"{type(exc).__name__}: {exc}",
-                               seconds=time.time() - started)
+                               error=f"{type(exc).__name__}: {exc}")
         finally:
             try:
                 session.close()
@@ -649,11 +677,10 @@ class TieredFetcher:
         if ok:
             harvested = _harvest_clearance(response.cookies if hasattr(response, "cookies") else None)
             if harvested:
-                self.clearance.put(url, harvested, self.proxy, self.user_agent, engine="curl_cffi")
+                cookies = {**cookies, **harvested}
         return FetchResult(ok, status, str(getattr(response, "url", url)), html, cookies,
                            "curl_cffi", challenge,
-                           error="" if ok else challenge.hint or f"HTTP {status}",
-                           seconds=time.time() - started)
+                           error="" if ok else challenge.hint or f"HTTP {status}")
 
     def _tier_solverr(self, url: str) -> Optional[FetchResult]:
         if not self.solverr.configured:
@@ -684,17 +711,19 @@ class TieredFetcher:
                                               proxy=self.proxy and {"server": self.proxy})
         try:
             context = await handle.browser.new_context(user_agent=self.user_agent)
-            if cookies:
-                await context.add_cookies([
-                    {"name": name, "value": value,
-                     "domain": urllib.parse.urlparse(url).netloc, "path": "/"}
-                    for name, value in cookies.items()
-                ])
+            seeded = playwright_cookies(url, cookies)
+            if seeded:
+                try:
+                    await context.add_cookies(seeded)
+                except Exception:
+                    pass
             page = await context.new_page()
             response = await page.goto(url, wait_until="domcontentloaded",
                                        timeout=int(self.timeout * 1000))
             await asyncio.sleep(random.uniform(0.6, 1.4))
             solved = await solve_challenge(page, timeout=max(20.0, self.timeout))
+            if solved:
+                await wait_for_clearance(page, timeout=3.0)
             html = await page.content()
             jar = await harvest_cookies(context)
             status = int(getattr(response, "status", 0) or 0)
@@ -706,6 +735,10 @@ class TieredFetcher:
                                error="" if solved else challenge.hint)
         finally:
             await handle.close()
+
+    def warm(self, url: str) -> FetchResult:
+        """Prime the clearance cache for ``url`` without caring about the body."""
+        return self.fetch(url)
 
     # ── entry point ──
 
@@ -723,6 +756,7 @@ class TieredFetcher:
             if result.ok:
                 return result
             errors.append(f"curl_cffi: {result.error}")
+            _respect_retry_after(result)
         else:
             errors.append("curl_cffi: not installed")
 
@@ -731,6 +765,7 @@ class TieredFetcher:
             if result.ok:
                 return result
             errors.append(f"flaresolverr: {result.error}")
+            _respect_retry_after(result)
 
         result = self._tier_browser(url)
         if result is not None:
@@ -753,6 +788,13 @@ class TieredFetcher:
         logger.warning("all fetch tiers failed for %s (%s)", url, "; ".join(errors))
         return FetchResult(False, 0, url, "", {}, "none", Challenge(NONE),
                            error="; ".join(errors), seconds=time.time() - started)
+
+
+def _respect_retry_after(result: FetchResult, cap: float = 20.0) -> None:
+    """Wait out a sane ``Retry-After`` before climbing to the next tier."""
+    wait = getattr(result.challenge, "retry_after", None)
+    if wait and 0 < float(wait) <= cap:
+        time.sleep(float(wait))
 
 
 def _harvest_clearance(cookie_jar) -> Dict[str, str]:
@@ -787,6 +829,96 @@ async def harvest_cookies(context) -> Dict[str, str]:
     return jar
 
 
+#: Public suffixes that would make the "last two labels" rule wrong.
+_MULTI_PART_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au",
+    "co.nz", "co.in", "co.jp", "or.jp", "ne.jp", "co.kr", "com.sg",
+    "com.hk", "com.cn", "com.tr", "co.za", "com.ar", "com.co", "com.pe",
+    "com.tw", "com.br", "com.mx",
+})
+
+
+def _cookie_domain(host: str) -> str:
+    """Cookie domain for a host: registrable domain, or the literal host.
+
+    Playwright rejects a cookie whose domain does not cover its name
+    (``.0.1`` for ``127.0.0.1``), and a bare two-label split mislabels
+    ``bbc.co.uk`` as ``.co.uk``. IPs and single-label hosts stay literal.
+    """
+    try:
+        import ipaddress
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    if host == "localhost" or "." not in host:
+        return host
+    parts = host.split(".")
+    if len(parts) == 2:
+        return "." + host
+    if ".".join(parts[-2:]) in _MULTI_PART_SUFFIXES:
+        return "." + ".".join(parts[-3:])
+    return "." + ".".join(parts[-2:])
+
+
+def playwright_cookies(url: str, cookies: Optional[Dict[str, str]]) -> List[dict]:
+    """``context.add_cookies()`` payload for a harvested clearance jar.
+
+    ``cf_clearance`` is minted for a host but is valid for its registrable
+    domain, so a cookie solved on ``www.linkedin.com`` must be written as
+    ``.linkedin.com`` or it is dropped on the next subdomain navigation.
+    """
+    host = urllib.parse.urlparse(url or "").netloc.lower().split("@")[-1]
+    host = host.split(":")[0]
+    if not host or not cookies:
+        return []
+    domain = _cookie_domain(host)
+    return [
+        {
+            "name": str(name),
+            "value": str(value),
+            "domain": domain,
+            "path": "/",
+            "httpOnly": True,
+            "secure": True,
+            "sameSite": "None",
+        }
+        for name, value in cookies.items()
+        if name and value
+    ]
+
+
+async def context_clearance(page) -> Dict[str, str]:
+    """Clearance cookies currently sitting in the page's context, if any."""
+    try:
+        context = getattr(page, "context", None)
+    except Exception:
+        return {}
+    if context is None:
+        return {}
+    return {name: value for name, value in (await harvest_cookies(context)).items()
+            if is_clearance_cookie(name)}
+
+
+async def wait_for_clearance(page, timeout: float = 15.0, poll: float = 0.5) -> Dict[str, str]:
+    """Poll the context jar until an edge hands over a clearance cookie.
+
+    The cookie is the authoritative "I passed" signal: it is set before the
+    challenged document finishes rendering, and DOM text can lag it by
+    seconds. Returns the jar (empty on timeout).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.5, float(timeout))
+    if getattr(page, "context", None) is None:
+        return {}
+    while loop.time() < deadline:
+        jar = await context_clearance(page)
+        if jar:
+            return jar
+        await asyncio.sleep(poll)
+    return {}
+
+
 # ─────────────────────────────────────────────────────────────
 #  Browser solving
 # ─────────────────────────────────────────────────────────────
@@ -795,32 +927,70 @@ async def solve_challenge(page, timeout: float = 45.0, *, click_turnstile: bool 
                           poll: float = 1.5) -> bool:
     """Wait for a Cloudflare/bot wall on ``page`` to clear.
 
-    Fast path: most patchright/camoufox sessions clear a managed challenge on
-    their own within a few seconds — the poll loop returns the moment the page
-    stops classifying as a wall.  Turnstile needs a click; a best-effort click
-    inside the iframe is attempted twice, and a solved Turnstile token counts as
-    success even while the document still looks like an interstitial.
+    Signals, strongest first:
+
+    1. **No wall** — the document classifies clean. Return immediately.
+    2. **Clearance cookie** — the edge handed over ``cf_clearance``; reload
+       once so the next document is the real one instead of the interstitial
+       that was already on the wire.
+    3. **Turnstile token** — the widget solved, but the token still has to be
+       submitted; give the page time to navigate, then reload. A token counts
+       as success even if the document still looks walled.
+    4. **Click** — up to three human-timed clicks inside the widget frame; a
+       fresh bounce after each one.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(5.0, float(timeout))
     clicks = 0
+    reloads = 0
     while loop.time() < deadline:
-        try:
-            html = await page.content()
-        except Exception:
-            await asyncio.sleep(poll)
-            continue
+        html = await _safe_content(page)
         challenge = classify_page(getattr(page, "url", "") or "", html)
         if not challenge.hard:
             return True
+
         if await _turnstile_token(page):
+            if reloads < 2:
+                reloads += 1
+                await asyncio.sleep(random.uniform(0.8, 1.6))
+                if await _safe_reload(page):
+                    continue
             return True
-        if click_turnstile and challenge.verdict == TURNSTILE and clicks < 2:
+
+        if click_turnstile and challenge.verdict == TURNSTILE and clicks < 3:
             clicks += 1
             if await _click_turnstile(page):
-                await asyncio.sleep(random.uniform(2.0, 3.5))
-        await asyncio.sleep(poll)
+                await asyncio.sleep(random.uniform(1.5, 2.6))
+                continue
+
+        # A cookie can land while the walled document is still on screen.
+        if reloads < 2 and await context_clearance(page):
+            reloads += 1
+            await asyncio.sleep(random.uniform(0.7, 1.4))
+            if await _safe_reload(page):
+                continue
+
+        await asyncio.sleep(poll * random.uniform(0.8, 1.2))
     return False
+
+
+async def _safe_content(page) -> str:
+    try:
+        return await page.content()
+    except Exception:
+        return ""
+
+
+async def _safe_reload(page) -> bool:
+    """Reload the current document; False when the page cannot (fakes/tests)."""
+    reload = getattr(page, "reload", None)
+    if reload is None:
+        return False
+    try:
+        await reload(wait_until="domcontentloaded", timeout=30000)
+        return True
+    except Exception:
+        return False
 
 
 async def _turnstile_token(page) -> str:
@@ -887,7 +1057,19 @@ _LAUNCH_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-extensions",
     "--start-maximized",
+    # First-run / promo surfaces a real profile never shows on a warm machine.
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-notifications",
+    "--disable-popup-blocking",
+    "--mute-audio",
+    "--hide-scrollbars",
+    "--lang=en-US",
 ]
+
+#: Playwright adds ``--enable-automation``, which any JS probe can read back.
+#: Dropping the switch costs nothing and removes one more "this is a bot" bit.
+_IGNORE_DEFAULT_ARGS = ["--enable-automation"]
 
 _ENGINE_ORDER = ("patchright", "camoufox", "playwright")
 
@@ -1003,7 +1185,8 @@ async def _launch_playwright_like(module_name: str, headless: bool, proxy: Optio
     try:
         if user_data_dir:
             context = await driver.chromium.launch_persistent_context(
-                user_data_dir, headless=headless, proxy=proxy, args=launch_args)
+                user_data_dir, headless=headless, proxy=proxy, args=launch_args,
+                ignore_default_args=_IGNORE_DEFAULT_ARGS)
             browser = context.browser
             handle = BrowserHandle(module_name, browser, driver,
                                    scriptable=(module_name == "playwright"))
@@ -1015,7 +1198,8 @@ async def _launch_playwright_like(module_name: str, headless: bool, proxy: Optio
         for extra in attempts:
             try:
                 browser = await driver.chromium.launch(
-                    headless=headless, proxy=proxy, args=launch_args, **extra)
+                    headless=headless, proxy=proxy, args=launch_args,
+                    ignore_default_args=_IGNORE_DEFAULT_ARGS, **extra)
                 return BrowserHandle(module_name, browser, driver,
                                      scriptable=(module_name == "playwright"))
             except Exception as exc:

@@ -308,6 +308,7 @@
               <div class="form-grid">
                 <div class="field wide"><label>Companies</label><input id="pCompanies" placeholder="Google, Microsoft, Stripe"></div>
                 <div class="field"><label>Location</label><input id="pLocation" placeholder="United States"></div>
+                <div class="field"><label>Max pages</label><input id="pPages" type="number" min="0" placeholder="10 (config)"></div>
                 <div class="field full"><label>Job titles</label><input id="pTitles" placeholder="Recruiter, Talent Acquisition, HR Manager"></div>
                 <div class="field"><label>Network</label>
                   <select id="pNetwork">
@@ -384,6 +385,8 @@
               <div class="form-grid">
                 <div class="field"><label>Targets (limit)</label><input id="fLimit" type="number" min="0" placeholder="0 = all"></div>
                 <div class="field"><label>Max profiles</label><input id="fMax" type="number" min="0" placeholder="0 = no cap"></div>
+                <div class="field"><label>Profiles / day</label><input id="fPerDay" type="number" min="0" placeholder="300 (config)"></div>
+                <div class="field"><label>Runtime (min)</label><input id="fRuntime" type="number" min="0" placeholder="180 (config)"></div>
                 <div class="field"><label>2FA wait (s)</label><input id="fChallenge" type="number" min="0" placeholder="0 = config"></div>
                 <div class="field full"><label>Formats</label><input id="fFormats" value="xlsx,csv,json,md,html"></div>
                 <div class="checks full">
@@ -703,6 +706,7 @@ function updateSummary(){
 function runPayload(){
   const payload = {
     mode: state.mode, limit:$("fLimit").value, max_profiles:$("fMax").value,
+    profiles_per_day:$("fPerDay").value, runtime_minutes:$("fRuntime").value,
     formats:$("fFormats").value, headless:$("fHeadless").checked,
     dry_run:$("fDry").checked, fresh:$("fFresh").checked,
     no_db:$("fNoDb").checked, challenge_timeout:$("fChallenge").value,
@@ -711,7 +715,7 @@ function runPayload(){
   if (state.mode === "people"){
     Object.assign(payload, {
       companies:val("pCompanies"), titles:val("pTitles"), location:val("pLocation"),
-      network:val("pNetwork"), seniority:val("pSeniority"),
+      network:val("pNetwork"), seniority:val("pSeniority"), max_pages:val("pPages"),
       current_company_ids:val("pCurrent"), past_company_ids:val("pPast"),
       school_ids:val("pSchool"), industry_ids:val("pIndustry"),
     });

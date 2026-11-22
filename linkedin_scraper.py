@@ -11,8 +11,10 @@ from playwright.async_api import Page, BrowserContext
 from bs4 import BeautifulSoup
 
 from behavior import human_mouse_move, idle_jitter, warm_up, Humanizer
-from cf_bypass import (block_reason_for, classify_page, launch_stealth_browser,
-                       solve_challenge)
+from cf_bypass import (ClearanceCache, available_engines, block_reason_for,
+                       classify_page, harvest_cookies, is_clearance_cookie,
+                       launch_stealth_browser, playwright_cookies, solve_challenge,
+                       wait_for_clearance)
 from config import Config
 from fingerprint import (country_from_proxy, detect_country, generate_profile,
                          host_os, strip_proxy_tag, summary as fingerprint_summary)
@@ -159,6 +161,24 @@ class LinkedInScraper:
         # the profile loop relaunches and retries that URL instead of counting
         # a whole page of failures.
         self._browser_closed = False
+        # Edge clearance (cf_clearance / __cf_bm) solved by this machine, keyed
+        # per domain + proxy + UA in output/clearance.json. Solved once, reused
+        # for every later context launched on the same egress identity.
+        try:
+            self.clearance = ClearanceCache(
+                getattr(config, "CF_CLEARANCE_FILE", "output/clearance.json"),
+                float(getattr(config, "CF_CLEARANCE_TTL_SECONDS", 1800)),
+            )
+        except Exception:
+            self.clearance = None
+        self._active_user_agent = ""
+        self._last_response_status = 0
+        self._last_response_headers: dict = {}
+        # Consecutive wall events on the current identity; drives engine
+        # escalation (playwright -> patchright -> camoufox) on rotation.
+        self._wall_streak = 0
+        self._engine_override = ""
+        self._prefer_scriptable_override: Optional[bool] = None
         # How many profiles came back empty for each tracked field — surfaced in
         # the final summary as an early warning for LinkedIn selector changes.
         self.section_misses = {}
@@ -239,7 +259,7 @@ class LinkedInScraper:
         # (fingerprint-spoofed Firefox) > stock playwright, or one explicit
         # engine from config. A dead proxy fails at launch, so fall back to a
         # direct connection once instead of dying.
-        engine = getattr(self.config, "BROWSER_ENGINE", "auto")
+        engine = self._engine_override or getattr(self.config, "BROWSER_ENGINE", "auto")
         channel = getattr(self.config, "BROWSER_CHANNEL", "")
         # Armor + a scriptable engine is the coherent combination: the injected
         # fingerprint actually runs, so the audit can score 100. Flip
@@ -247,6 +267,8 @@ class LinkedInScraper:
         fingerprint_mode = str(getattr(self.config, "FINGERPRINT_ENGINE", "generator")).lower()
         prefer_scriptable = (bool(getattr(self.config, "PREFER_SCRIPTABLE_ENGINE", True))
                              and fingerprint_mode == "generator")
+        if self._prefer_scriptable_override is not None:
+            prefer_scriptable = self._prefer_scriptable_override
         try:
             self.engine_handle = await launch_stealth_browser(
                 engine=engine, headless=self.config.HEADLESS,
@@ -330,6 +352,12 @@ class LinkedInScraper:
             },
             storage_state=storage_state,
         )
+        self._active_user_agent = user_agent
+
+        # Replay a previously solved edge clearance for THIS exact identity
+        # (domain + proxy + UA). It is the difference between meeting a
+        # challenge on every navigation and sailing through on the first one.
+        await self._seed_clearance()
 
         # Deep stealth script — every LinkedIn bot-check surface, patched in
         # one pass. f-string with doubled braces; {fp[...]} holes inject the
@@ -488,6 +516,82 @@ class LinkedInScraper:
         self._telemetry_event("audit", f"{score}/100 {grade}")
         return result
 
+    # ─────────────────────────────────────────────
+    #  EDGE CLEARANCE (cf_clearance) + ENGINE ESCALATION
+    # ─────────────────────────────────────────────
+
+    def _clearance_url(self) -> str:
+        return "https://www.linkedin.com"
+
+    async def _seed_clearance(self) -> int:
+        """Write cached clearance cookies into the fresh context.
+
+        Scoped to (domain, proxy, UA) by the cache: replaying a cookie on a
+        different egress IP is a detection signal, not a shortcut.
+        """
+        if (self.clearance is None or self.context is None
+                or not getattr(self.config, "CF_SEED_CLEARANCE", True)):
+            return 0
+        url = self._clearance_url()
+        try:
+            jar = self.clearance.get(url, self.current_proxy, self._active_user_agent)
+            payload = playwright_cookies(url, jar)
+            if not payload:
+                return 0
+            await self.context.add_cookies(payload)
+        except Exception as exc:
+            logger.debug("clearance seed failed: %s", exc)
+            return 0
+        logger.info(f"🍪 Replayed {len(payload)} clearance cookie(s) for this identity")
+        return len(payload)
+
+    async def _persist_clearance(self) -> int:
+        """Harvest refreshed clearance cookies from the live context."""
+        if self.clearance is None or self.context is None:
+            return 0
+        try:
+            jar = await harvest_cookies(self.context)
+        except Exception:
+            return 0
+        kept = {name: value for name, value in jar.items() if is_clearance_cookie(name)}
+        if not kept:
+            return 0
+        engine = self.engine_handle.engine if self.engine_handle else ""
+        if self.clearance.put(self._clearance_url(), kept, self.current_proxy,
+                              self._active_user_agent, engine=engine):
+            logger.debug("clearance cached: %s", ", ".join(sorted(kept)))
+            return len(kept)
+        return 0
+
+    def _escalate_engine(self) -> str:
+        """Walk up the engine ladder after repeated walls on one identity.
+
+        Stock Playwright is the most coherent browser but has no native
+        anti-CF patches; patchright has the patches and no scriptable
+        fingerprint. When walls keep landing, the patches matter more.
+        """
+        if not getattr(self.config, "CF_ENGINE_ESCALATION", True):
+            return ""
+        ladder = [name for name in ("playwright", "patchright", "camoufox")
+                  if name in available_engines()]
+        if not ladder:
+            return ""
+        current = self._engine_override
+        if not current and self.engine_handle is not None:
+            current = getattr(self.engine_handle, "engine", "") or ""
+        try:
+            index = ladder.index(current)
+        except ValueError:
+            index = 0
+        if index >= len(ladder) - 1:
+            return ""  # already at the hardest-hitting engine available
+        nxt = ladder[index + 1]
+        self._engine_override = nxt
+        self._prefer_scriptable_override = (nxt == "playwright")
+        logger.warning(f"🔼 Engine escalation: {current or 'auto'} → {nxt} (repeated walls)")
+        self._telemetry_event("engine", f"escalate to {nxt}")
+        return nxt
+
     async def _shutdown_browser(self):
         """Close context, browser, engine driver — every step independently guarded.
 
@@ -542,6 +646,11 @@ class LinkedInScraper:
         # half-dead driver after a block is the most common "target closed".
         await self._shutdown_browser()
 
+        # Repeated walls on one identity mean the browser itself is the
+        # problem, not the IP: climb to an engine with native CF patches.
+        if self._wall_streak >= 2:
+            self._escalate_engine()
+
         try:
             await self._launch_browser()
         except Exception as e:
@@ -556,9 +665,23 @@ class LinkedInScraper:
             logger.error(f"❌ Re-login after rotation errored ({e.__class__.__name__}: {e}).")
             return False
 
+        self._wall_streak = 0
         if self.current_proxy:
             self.proxy_intel.mark_ok(self.current_proxy)
         return True
+
+    async def _maybe_relaunch(self) -> bool:
+        """Timer-based identity rotation — off by default.
+
+        A relaunch costs a login and, on a cold profile, a checkpoint. Rotating
+        on a timer was how a healthy run turned into a wall of
+        ``TargetClosedError``; rotate only when a block actually demands it
+        (``_recover_from_block``).
+        """
+        every = int(getattr(self.config, "RELAUNCH_EVERY_N_REQUESTS", 0) or 0)
+        if not every or self.session_count % every:
+            return False
+        return await self._rotate_identity()
 
     def _next_proxy(self):
         """
@@ -702,30 +825,39 @@ class LinkedInScraper:
         # nothing like a rate-limit page; the classifier names them, and the
         # solver waits for the challenge to clear instead of rotating straight
         # into the same wall.
-        challenge = classify_page(current_url, content)
+        challenge = classify_page(current_url, content,
+                                  getattr(self, "_last_response_headers", None),
+                                  int(getattr(self, "_last_response_status", 0) or 200))
         if challenge.hard:
-            logger.warning(f"🧱 Bot wall: {challenge.verdict} ({challenge.hint})")
+            self._wall_streak += 1
+            logger.warning(f"🧱 Bot wall: {challenge.verdict} ({challenge.hint}) "
+                           f"[streak {self._wall_streak}]")
             # Only edge walls are worth waiting on. LinkedIn's own captcha does
             # not clear by waiting — rotating identity is the correct response.
             solvable = challenge.verdict in ("cloudflare", "turnstile", "bot_wall")
             if solvable and getattr(self.config, "CF_AUTO_SOLVE", True):
                 timeout = getattr(self.config, "CF_SOLVE_TIMEOUT", 45)
                 if await solve_challenge(self.page, timeout=timeout):
-                    logger.info("✅ Bot wall cleared — continuing.")
-                    self._telemetry_event("wall", f"{challenge.verdict}: solved")
-                    return False
+                    await wait_for_clearance(self.page, timeout=3.0)
+                    if await self._page_is_clean():
+                        await self._persist_clearance()
+                        logger.info("✅ Bot wall cleared — continuing.")
+                        self._telemetry_event("wall", f"{challenge.verdict}: solved")
+                        return False
                 # A headed session can always fall back to a human click; that
                 # is the one thing an interactive Turnstile actually wants.
                 if (not self.config.HEADLESS
                         and getattr(self.config, "CF_MANUAL_FALLBACK", True)
                         and await self._await_wall_resolution(
                             getattr(self.config, "CF_MANUAL_TIMEOUT", 90))):
+                    await self._persist_clearance()
                     logger.info("✅ Bot wall cleared manually — continuing.")
                     self._telemetry_event("wall", f"{challenge.verdict}: manual")
                     return False
             self._block_reason = block_reason_for(challenge.verdict) or challenge.verdict
             self._telemetry_event("wall", f"{challenge.verdict}: unsolved")
             return True
+        self._wall_streak = 0
 
         # 3) Rate limiting / throttling — LinkedIn's classic "slow down" wall.
         if any(m in content for m in (
@@ -759,6 +891,27 @@ class LinkedInScraper:
             self._block_reason = "captcha"
             return True
 
+        return False
+
+    async def _page_is_clean(self) -> bool:
+        """Confirm the wall is gone, not just a widget that solved on a walled
+        document. A solved Turnstile token still needs one reload to fetch the
+        real page."""
+        headers = getattr(self, "_last_response_headers", None)
+        status = int(getattr(self, "_last_response_status", 0) or 200)
+        for attempt in range(2):
+            try:
+                html = await self.page.content()
+            except Exception:
+                return False
+            if not classify_page(self.page.url, html, headers, status).hard:
+                return True
+            if attempt == 0:
+                try:
+                    await self.page.reload(wait_until="domcontentloaded", timeout=30000)
+                except Exception:
+                    return False
+                await asyncio.sleep(random.uniform(0.8, 1.6))
         return False
 
     async def _recover_from_block(self, context: str) -> bool:
@@ -1122,7 +1275,16 @@ class LinkedInScraper:
         last = None
         for attempt in range(max(1, int(retries))):
             try:
-                return await self.page.goto(url, wait_until=wait_until, timeout=budget)
+                response = await self.page.goto(url, wait_until=wait_until, timeout=budget)
+                # Edge blocks are often announced in the header
+                # (``cf-mitigated: challenge``) even when the body is small.
+                self._last_response_status = int(getattr(response, "status", 0) or 0)
+                try:
+                    self._last_response_headers = dict(
+                        (response.headers if response is not None else {}) or {})
+                except Exception:
+                    self._last_response_headers = {}
+                return response
             except Exception as exc:
                 last = exc
                 if "ERR_ABORTED" in str(exc) and attempt + 1 < retries:
@@ -1154,6 +1316,7 @@ class LinkedInScraper:
         Returns a list of job dicts extracted from the search results page.
         """
         jobs = []
+        seen_jobs = set()
         page_num = 1
 
         # Faceted job URL (v5.0): recency / experience / workplace / easy-apply
@@ -1194,9 +1357,10 @@ class LinkedInScraper:
                     logger.info("   No more jobs found.")
                     break
 
-                new_jobs = await self._extract_job_cards()
+                new_jobs = [job for job in await self._extract_job_cards()
+                            if job.get("url") and job["url"] not in seen_jobs]
                 if not new_jobs:
-                    logger.info(f"      No extractable jobs on page {page_num}.")
+                    logger.info(f"      No new jobs on page {page_num} — end of results.")
                     break
 
                 # Apply Strict Hours Filter (dropped is initialised outside the
@@ -1222,6 +1386,7 @@ class LinkedInScraper:
                     if dropped > 0:
                         break
 
+                seen_jobs.update(job["url"] for job in new_jobs)
                 jobs.extend(new_jobs)
                 logger.info(f"      Page {page_num}: +{len(new_jobs)} jobs extracted")
 
@@ -1232,8 +1397,7 @@ class LinkedInScraper:
                 if self.session_count % self.config.BREAK_EVERY_N_REQUESTS == 0:
                     await self._take_session_break()
                     
-                if self.config.ROTATE_USER_AGENT and self.session_count % self.config.UA_ROTATE_EVERY_N == 0:
-                    await self._rotate_identity()
+                await self._maybe_relaunch()
 
             except Exception as e:
                 logger.error(f"      Search error page {page_num}: {e}")
@@ -1307,6 +1471,7 @@ class LinkedInScraper:
         Returns a list of profile URLs.
         """
         profile_urls = []
+        seen = set()
         page_num = 1
 
         # Skill + optional title filter, rendered through the same faceted
@@ -1348,10 +1513,18 @@ class LinkedInScraper:
                 if "No results found" in content or "no results" in content.lower():
                     break
 
-                new_urls = await self._extract_profile_urls()
+                new_urls = [link for link in await self._extract_profile_urls()
+                            if link not in seen]
                 if not new_urls:
+                    await human_delay(2, 4)
+                    await random_scroll(self.page)
+                    new_urls = [link for link in await self._extract_profile_urls()
+                                if link not in seen]
+                if not new_urls:
+                    logger.info(f"      Page {page_num}: no new candidates — end of results.")
                     break
 
+                seen.update(new_urls)
                 profile_urls.extend(new_urls)
                 logger.info(f"      Page {page_num}: +{len(new_urls)} candidate profiles")
 
@@ -1362,8 +1535,7 @@ class LinkedInScraper:
                 if self.session_count % self.config.BREAK_EVERY_N_REQUESTS == 0:
                     await self._take_session_break()
                     
-                if self.config.ROTATE_USER_AGENT and self.session_count % self.config.UA_ROTATE_EVERY_N == 0:
-                    await self._rotate_identity()
+                await self._maybe_relaunch()
 
             except Exception as e:
                 logger.error(f"      Search error page {page_num}: {e}")
@@ -1384,6 +1556,7 @@ class LinkedInScraper:
         Returns a list of profile URLs.
         """
         profile_urls = []
+        seen = set()
         page_num = 1
 
         # Faceted search URL (v5.0). Title + company stay quoted, AND-ed terms;
@@ -1425,10 +1598,20 @@ class LinkedInScraper:
                 if "No results found" in content or "no results" in content.lower():
                     break
 
-                new_urls = await self._extract_profile_urls()
+                new_urls = [link for link in await self._extract_profile_urls()
+                            if link not in seen]
                 if not new_urls:
+                    # A half-rendered results list is not the end of the search:
+                    # scroll, pause, look once more before closing it.
+                    await human_delay(2, 4)
+                    await random_scroll(self.page)
+                    new_urls = [link for link in await self._extract_profile_urls()
+                                if link not in seen]
+                if not new_urls:
+                    logger.info(f"      Page {page_num}: no new profiles — end of results.")
                     break
 
+                seen.update(new_urls)
                 profile_urls.extend(new_urls)
                 logger.info(f"      Page {page_num}: +{len(new_urls)} profiles")
 
@@ -1439,8 +1622,7 @@ class LinkedInScraper:
                 if self.session_count % self.config.BREAK_EVERY_N_REQUESTS == 0:
                     await self._take_session_break()
                     
-                if self.config.ROTATE_USER_AGENT and self.session_count % self.config.UA_ROTATE_EVERY_N == 0:
-                    await self._rotate_identity()
+                await self._maybe_relaunch()
 
             except Exception as e:
                 logger.error(f"      Search error page {page_num}: {e}")
@@ -1471,6 +1653,44 @@ class LinkedInScraper:
     #  PROFILE SCRAPING
     # ─────────────────────────────────────────────
 
+    async def _clear_profile_wall(self, profile_url: str) -> None:
+        """Clear an edge wall on a profile page, or raise for a recorded failure.
+
+        Returning normally means the page is safe to parse. A wall that cannot
+        be cleared raises ``RuntimeError`` so ``scrape_profile``'s handler puts
+        the URL in ``failed_urls`` (retried once at the end) instead of saving
+        a record whose every field is empty.
+        """
+        try:
+            html = await self.page.content()
+        except Exception:
+            return  # let the normal parse path surface the real error
+        wall = classify_page(
+            getattr(self.page, "url", "") or "",
+            html,
+            getattr(self, "_last_response_headers", None),
+            int(getattr(self, "_last_response_status", 0) or 200),
+        )
+        if not wall.hard:
+            self._wall_streak = 0
+            return
+        self._wall_streak += 1
+        logger.warning(f"🧱 Profile wall: {wall.verdict} ({wall.hint})")
+        solved = (
+            wall.verdict in ("cloudflare", "turnstile", "bot_wall")
+            and getattr(self.config, "CF_AUTO_SOLVE", True)
+            and await solve_challenge(
+                self.page, timeout=getattr(self.config, "CF_SOLVE_TIMEOUT", 45))
+        )
+        if solved:
+            if await self._page_is_clean():
+                await self._persist_clearance()
+                self._telemetry_event("wall", f"profile {wall.verdict}: solved")
+                return
+        self._block_reason = block_reason_for(wall.verdict) or wall.verdict
+        self._telemetry_event("wall", f"profile {wall.verdict}: unsolved")
+        raise RuntimeError(f"bot wall on profile: {wall.verdict} ({wall.hint})")
+
     async def scrape_profile(self, profile_url: str, search_company: str, job_title: str) -> Optional[dict]:
         """Scrape a single LinkedIn profile. Returns dict or None."""
         try:
@@ -1478,6 +1698,12 @@ class LinkedInScraper:
                                   timeout=30000, retries=2)
             await human_delay(3, 7)
             await self._maybe_humanize()
+
+            # A walled document parses into a record with every field empty —
+            # silent data corruption that looks like a selector change. Clear
+            # the wall or fail the URL; never write the empty shell.
+            await self._clear_profile_wall(profile_url)
+
             await random_scroll(self.page, scrolls=3)
 
             soup = BeautifulSoup(await self.page.content(), "html.parser")
@@ -2333,10 +2559,37 @@ class LinkedInScraper:
             return 0
         logger.info(f"🔁 Retrying {len(pending)} failed profile(s) once...")
         recovered = 0
+        recovered_browser = False
+        # A hard abort leaves no page behind; bring up an identity before the
+        # retry pass instead of failing every URL against None.
+        if self.page is None:
+            if await self._recover_closed_browser():
+                recovered_browser = True
+            else:
+                logger.error("   ❌ No live browser for the retry pass — skipped.")
+                return 0
         for f in pending:
+            # A closed window poisons every remaining retry; relaunch once,
+            # and abandon the pass if the relaunch itself fails.
+            if self._browser_closed:
+                self._browser_closed = False
+                if recovered_browser or not await self._recover_closed_browser():
+                    logger.error("   ❌ Browser is dead — abandoning the retry pass.")
+                    break
+                recovered_browser = True
             profile = await self.scrape_profile(
                 f["url"], search_company=f.get("company", ""), job_title=f.get("title", "")
             )
+            if profile is None and self._browser_closed:
+                self._browser_closed = False
+                if not recovered_browser and await self._recover_closed_browser():
+                    recovered_browser = True
+                    profile = await self.scrape_profile(
+                        f["url"], search_company=f.get("company", ""),
+                        job_title=f.get("title", ""))
+                else:
+                    logger.error("   ❌ Browser is dead — abandoning the retry pass.")
+                    break
             if profile:
                 self.results.append(profile)
                 self.scraped_urls.add(f["url"])
@@ -2403,13 +2656,34 @@ class LinkedInScraper:
     # ─────────────────────────────────────────────
 
     async def _take_session_break(self):
-        """Random break to avoid detection — visits feed like a real user."""
+        """Random break to avoid detection — visits feed like a real user.
+
+        A break is cosmetic: it must never abort a run. A closed window here
+        used to raise ``TargetClosedError`` straight through ``run()`` and kill
+        a healthy scrape, so every step is guarded and a dead browser is
+        recovered instead of propagated.
+        """
         t = random.randint(self.config.MIN_SESSION_BREAK_SECONDS, self.config.MAX_SESSION_BREAK_SECONDS)
         logger.info(f"☕ Session break: {t}s...")
-        await self.page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
+        try:
+            await self._goto_page("https://www.linkedin.com/feed/",
+                                  wait_until="domcontentloaded", retries=2)
+        except Exception as exc:
+            if self._is_browser_closed(exc):
+                if not await self._recover_closed_browser():
+                    logger.warning("☕ Session break skipped — browser could not be recovered.")
+                    return
+            else:
+                logger.warning(f"☕ Session break skipped ({exc.__class__.__name__}) — continuing.")
+                return
         await asyncio.sleep(t / 2)
-        await random_scroll(self.page, scrolls=random.randint(2, 4))
+        try:
+            await random_scroll(self.page, scrolls=random.randint(2, 4))
+        except Exception:
+            pass
         await asyncio.sleep(t / 2)
+        if self._wall_streak == 0:
+            await self._persist_clearance()
 
     # ─────────────────────────────────────────────
     #  MAIN ORCHESTRATION
@@ -2679,6 +2953,7 @@ class LinkedInScraper:
         self._emit("warmup", "ok" if ok else "skipped")
         if ok:
             logger.info("Warm-up browse complete.")
+        await self._persist_clearance()
 
     async def _maybe_humanize(self) -> None:
         """Pointer movement + occasional idle scroll before reading a page."""
@@ -2693,6 +2968,22 @@ class LinkedInScraper:
     def _cap_reached(self) -> bool:
         cap = int(getattr(self.config, "MAX_PROFILES_PER_RUN", 0) or 0)
         return bool(cap and self.profiles_this_run >= cap)
+
+    def _safety_stop(self) -> bool:
+        """Run-level budget check for the outer loops.
+
+        Without this, a spent profile budget only broke the profile loop: the
+        run kept loading every remaining company/keyword search, burning quota
+        and time to scrape nothing.
+        """
+        if not self.safety.enabled:
+            return False
+        stop, why = self.safety.should_stop()
+        if stop:
+            logger.error(f"🛑 Safety stop: {why}")
+            self._stop_reason = f"safety: {why}"
+            self._telemetry_event("safety", why)
+        return stop
 
     def _complete_search(self, key: str, completed_keys: set) -> None:
         """Checkpoint one finished search in progress.json and the database."""
@@ -2769,8 +3060,7 @@ class LinkedInScraper:
             self.session_count += 1
             if self.session_count % self.config.BREAK_EVERY_N_REQUESTS == 0:
                 await self._take_session_break()
-            if self.config.ROTATE_USER_AGENT and self.session_count % self.config.UA_ROTATE_EVERY_N == 0:
-                await self._rotate_identity()
+            await self._maybe_relaunch()
         return scraped
 
     def _export_results(self, mode: str) -> dict:
@@ -2890,7 +3180,7 @@ class LinkedInScraper:
             # --- PEOPLE SEARCH MODE ---
             if mode == "people":
                 for i, company in enumerate(input_list, 1):
-                    if self._cap_reached():
+                    if self._cap_reached() or self._safety_stop():
                         break
                     logger.info(f"\n[{i}/{total}] {company}")
 
@@ -2908,6 +3198,8 @@ class LinkedInScraper:
             # --- JOB SEARCH MODE ---
             elif mode == "jobs":
                 for i, keyword in enumerate(input_list, 1):
+                    if self._safety_stop():
+                        break
                     logger.info(f"\n[{i}/{total}] Keyword: {keyword}")
 
                     key = f"jobs::{keyword}"
@@ -2930,7 +3222,7 @@ class LinkedInScraper:
             # --- CANDIDATES SEARCH MODE ---
             elif mode == "candidates":
                 for i, skill in enumerate(input_list, 1):
-                    if self._cap_reached():
+                    if self._cap_reached() or self._safety_stop():
                         break
                     logger.info(f"\n[{i}/{total}] Skill: {skill}")
 

@@ -8,7 +8,7 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   and `utils.py` were fixed (duplicate `USER_AGENTS` block, merged `logger.info` line, and
   stripped imports restored). `python main.py` requires the project venv
   (`.venv/Scripts/python.exe`) with `Requirements.txt` installed — the venv had been left
-  empty. `playwright install chromium` is still needed before a real run.
+  empty. Chromium was installed on this machine on 2026-11-21 (`playwright install chromium`).
 - `linkedin_scraper.py` referenced `self.current_account` (login) and `config.DISCORD_WEBHOOK_URL`
   which didn't exist; both are now defined. `scrape_profile` calls `_extract_about/skills/
   experience/education` — implemented in the power-up; keep them if you touch the scraper.
@@ -90,7 +90,7 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 - The dashboard table's sort coerces with `String(a[key] ?? "")`; without that, sorting any
   boolean/number column (open_to_work, follower_count, connection_count) throws.
 - Behavioral tests: `test_scraper_fixes.py` (34 tests), `test_login_flow.py` (5 tests),
-  `test_power_features.py` (58 tests), `test_cf_agent.py` (46 tests), `test_brutal.py`
+  `test_power_features.py` (58 tests), `test_cf_agent.py` (57 tests), `test_brutal.py`
   (54 tests), `test_webapp.py` (23 tests) and `test_safety.py` (14 tests) — run each with
   `.venv/Scripts/python.exe <file>` (no browser or network needed; the login suite drives the
   real `login()` against fakes, the dashboard suite binds an ephemeral loopback port). No
@@ -185,7 +185,7 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 - `AgentBrowserServer` bridges the synchronous MCP stdio loop to the async session through
   `AsyncRunner` (private loop thread); `serve()` closes the session on EOF. stdout is
   protocol-only — log to stderr.
-- `test_cf_agent.py` (46 tests) is the fourth suite: classifier cases, cache scoping/TTL,
+- `test_cf_agent.py` (57 tests) is the fourth suite: classifier cases, cache scoping/TTL,
   TLS targets, FlareSolverr, fetch-ladder order, snapshot format/staleness, MCP dispatch,
   scraper block classification. Run every suite before claiming a change works.
 - Windows console: `agent_browser.main` and `cli.main` reconfigure stdout/stderr to UTF-8

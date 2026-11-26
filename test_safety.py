@@ -20,6 +20,25 @@ def _guard(tmp, now, **kwargs):
                        clock=lambda: now[0], **kwargs)
 
 
+def _isolated_config(**overrides):
+    """Config whose runtime artifacts land in a throwaway dir.
+
+    A suite must never write the live output/scraper.log, output/session_health.json
+    or output/safety.json: the ledger is the real account's daily budget and the
+    session-health file is real run history.
+    """
+    from config import Config
+
+    tmp = Path(tempfile.mkdtemp(prefix="li_test_"))
+    config = Config()
+    config.LOG_FILE = str(tmp / "scraper.log")
+    config.SESSION_HEALTH_FILE = str(tmp / "session_health.json")
+    config.SAFETY_LEDGER_FILE = str(tmp / "safety.json")
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return config
+
+
 def test_fresh_guard_is_clean():
     with tempfile.TemporaryDirectory() as tmp:
         now = [1_700_000_000.0]
@@ -180,9 +199,8 @@ def test_scraper_recover_respects_wall_budget():
     from linkedin_scraper import LinkedInScraper
 
     with tempfile.TemporaryDirectory() as tmp:
-        config = Config()
-        config.SAFETY_MAX_WALLS_PER_DAY = 2
-        config.SAFETY_LEDGER_FILE = str(Path(tmp) / "safety.json")
+        config = _isolated_config(SAFETY_MAX_WALLS_PER_DAY=2,
+                                  SAFETY_LEDGER_FILE=str(Path(tmp) / "safety.json"))
         scraper = LinkedInScraper(config)
         scraper.safety.start_run()
         scraper.safety.note_wall("authwall")

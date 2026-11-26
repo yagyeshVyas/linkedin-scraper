@@ -660,6 +660,23 @@ def test_export_all_formats():
     assert all(Path(path).stat().st_size > 0 for path in written.values())
 
 
+def test_export_all_xlsx_from_bare_stem():
+    """`--out output/report` (no suffix) must still produce a real .xlsx file.
+
+    pandas infers the Excel writer from the suffix, so a bare stem used to fail
+    with "No engine for filetype: ''" and only csv/json/jsonl/md/html landed.
+    """
+    directory = _tmpdir()
+    for mode, key in (("people", "xlsx"), ("jobs", "xlsx"),
+                      ("candidates", "candidates_xlsx")):
+        written = export_all(_sample_records(), str(directory / f"bare_{mode}"),
+                             formats=["xlsx"], mode=mode, meta={"title": "Bare"})
+        assert key in written, f"{mode}: {written}"
+        path = Path(written[key])
+        assert path.suffix == ".xlsx", f"{mode}: {written[key]}"
+        assert path.exists() and path.stat().st_size > 0, f"{mode}: {written[key]}"
+
+
 def test_ordered_columns_includes_extras():
     columns = ordered_columns([{"name": "x", "custom_field": "y"}], mode="people")
     keys = [key for key, _ in columns]
@@ -1045,6 +1062,7 @@ if __name__ == "__main__":
         test_html_report_escapes_and_renders_charts,
         test_summarize_and_infer_mode,
         test_export_all_formats,
+        test_export_all_xlsx_from_bare_stem,
         test_ordered_columns_includes_extras,
         test_mcp_initialize_and_lists,
         test_mcp_tools_return_data,

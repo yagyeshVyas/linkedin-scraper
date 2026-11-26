@@ -4,8 +4,10 @@ Run with the project venv:  .venv/Scripts/python.exe test_scraper_fixes.py
 Pure unit tests — no browser, no network.
 """
 import asyncio
+import json
 import random
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -264,6 +266,22 @@ def test_failed_url_retry_recovers():
     assert asyncio.run(s._retry_failed_profiles()) == 0
 
 
+def _test_cfg(tmp: str, **overrides) -> Config:
+    """Config whose runtime artifacts land in ``tmp``.
+
+    Tests must never write the live output/scraper.log, session_health.json or
+    safety.json: the safety ledger is a daily account budget, so a test run
+    must not consume it.
+    """
+    cfg = Config()
+    cfg.LOG_FILE = str(Path(tmp) / "scraper.log")
+    cfg.SESSION_HEALTH_FILE = str(Path(tmp) / "session_health.json")
+    cfg.SAFETY_LEDGER_FILE = str(Path(tmp) / "safety.json")
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
+    return cfg
+
+
 def test_dry_run_flow():
     L.human_delay = _noop
     L.random_scroll = _noop
@@ -297,7 +315,7 @@ def test_dry_run_flow():
             self.search_calls.append(("candidates", skill))
             return ["https://www.linkedin.com/in/c"]
 
-    cfg = Config()
+    cfg = _test_cfg(tempfile.mkdtemp(prefix="li_dry_"))
     cfg.USE_PERSISTENT_SESSION = False
 
     # people mode: first company × first configured title
@@ -324,9 +342,43 @@ def test_dry_run_flow():
         async def login(self):
             return False
 
-    s4 = NoLogin(Config())
+    s4 = NoLogin(_test_cfg(tempfile.mkdtemp(prefix="li_dry_")))
     assert asyncio.run(s4.dry_run(["Walmart"])) is False
     assert s4.search_calls == [], "no search should run when login fails"
+
+
+def test_dry_run_leaves_the_real_safety_ledger_alone():
+    """dry_run() must spend the configured ledger, never the live one.
+
+    test_dry_run_flow above drives dry_run() four times. Before the config paths
+    were redirected each suite run incremented output/safety.json (runs += 4),
+    silently eating the real account's daily safety budget — a test suite must
+    not cost a run.
+    """
+    real = Path("output/safety.json")
+    before = real.read_bytes() if real.exists() else None
+
+    class Fake(L.LinkedInScraper):
+        async def _launch_browser(self):
+            pass
+
+        async def login(self):
+            return True
+
+        async def search_jobs(self, keyword):
+            return []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _test_cfg(tmp, SEARCH_MODE="jobs")
+        s = Fake(cfg)
+        assert asyncio.run(s.dry_run([])) is True
+        ledger = Path(cfg.SAFETY_LEDGER_FILE)
+        assert ledger.exists(), "the dry run should write the configured ledger"
+        state = json.loads(ledger.read_text(encoding="utf-8"))
+        assert state["runs"] == 1, state
+
+    after = real.read_bytes() if real.exists() else None
+    assert before == after, "a test dry-run must not touch output/safety.json"
 
 
 def test_cli_parser():
@@ -1202,6 +1254,7 @@ if __name__ == "__main__":
                test_proxy_manager_cache_used_without_network,
                test_backoff_growth_and_cap,
                test_failed_url_retry_recovers, test_dry_run_flow,
+               test_dry_run_leaves_the_real_safety_ledger_alone,
                test_cli_parser, test_session_health_store_rolling_cap,
                test_session_health_live_then_finalize, test_ban_risk_logic,
                test_generator_loads_session_health, test_login_helpers,

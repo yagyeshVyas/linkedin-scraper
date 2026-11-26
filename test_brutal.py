@@ -606,13 +606,31 @@ def test_session_armor_defaults_to_generated_profile():
 #  Scraper integration
 # ─────────────────────────────────────────────────────────────
 
+def _isolated_config(**overrides):
+    """Config whose runtime artifacts land in a throwaway dir.
+
+    A suite must never write the live output/scraper.log, output/session_health.json
+    or output/safety.json: the ledger is the real account's daily budget and the
+    session-health file is real run history.
+    """
+    from config import Config
+
+    tmp = Path(tempfile.mkdtemp(prefix="li_test_"))
+    config = Config()
+    config.LOG_FILE = str(tmp / "scraper.log")
+    config.SESSION_HEALTH_FILE = str(tmp / "session_health.json")
+    config.SAFETY_LEDGER_FILE = str(tmp / "safety.json")
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return config
+
+
 def test_scraper_strips_proxy_tags_and_remembers_country():
     from config import Config
     from linkedin_scraper import LinkedInScraper
 
-    config = Config()
-    config.PROXY_LIST = ["http://u:p@a:1#DE", "http://u:p@b:1#US"]
-    config.PROXY_INTEL_ENABLED = False
+    config = _isolated_config(PROXY_LIST=["http://u:p@a:1#DE", "http://u:p@b:1#US"],
+                              PROXY_INTEL_ENABLED=False)
     scraper = LinkedInScraper(config)
     picked = scraper._next_proxy()
     assert picked == "http://u:p@a:1" or picked == "http://u:p@b:1"
@@ -625,9 +643,8 @@ def test_scraper_intel_picks_healthy_proxy():
     from linkedin_scraper import LinkedInScraper
 
     with tempfile.TemporaryDirectory() as tmp:
-        config = Config()
-        config.PROXY_LIST = ["http://a:1", "http://b:1"]
-        config.PROXY_INTEL_FILE = str(Path(tmp) / "intel.json")
+        config = _isolated_config(PROXY_LIST=["http://a:1", "http://b:1"],
+                                  PROXY_INTEL_FILE=str(Path(tmp) / "intel.json"))
         scraper = LinkedInScraper(config)
         scraper.proxy_intel.mark_block("http://a:1")
         picked = scraper._next_proxy()
@@ -661,9 +678,7 @@ def test_scraper_launch_audit_records_score():
     from config import Config
     from linkedin_scraper import LinkedInScraper
 
-    config = Config()
-    config.STEALTH_AUDIT_ON_LAUNCH = True
-    config.STEALTH_AUDIT_MIN_SCORE = 90
+    config = _isolated_config(STEALTH_AUDIT_ON_LAUNCH=True, STEALTH_AUDIT_MIN_SCORE=90)
     scraper = LinkedInScraper(config)
     scraper.page = _ProbePage(dict(GOOD_SIGNALS))
     result = asyncio.run(scraper._audit_stealth())
@@ -676,7 +691,7 @@ def test_browser_closed_detection_and_recovery():
     from config import Config
     from linkedin_scraper import LinkedInScraper
 
-    scraper = LinkedInScraper(Config())
+    scraper = LinkedInScraper(_isolated_config())
     assert scraper._is_browser_closed(RuntimeError(
         "Target page, context or browser has been closed"))
     assert scraper._is_browser_closed(RuntimeError("TargetClosedError: page crashed"))

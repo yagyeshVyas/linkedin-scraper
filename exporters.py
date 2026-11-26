@@ -515,12 +515,18 @@ def export_all(records: Iterable[dict], base_path: str,
         try:
             from utils import (export_candidates_to_excel, export_jobs_to_excel,
                                export_to_excel)
+            # pandas picks the Excel engine from the file suffix. The CLI's
+            # documented `--out` shape is a bare stem (`--out output/report`),
+            # which made df.to_excel raise "No engine for filetype: ''" and the
+            # xlsx leg fail while every other format was written. Hand utils a
+            # path that always carries the .xlsx suffix.
+            xlsx_path = base if base.suffix.lower() == ".xlsx" else Path(f"{stem}.xlsx")
             if mode == "jobs":
-                written["xlsx"] = export_jobs_to_excel(records, str(base))
+                written["xlsx"] = export_jobs_to_excel(records, str(xlsx_path))
             elif mode == "candidates":
-                written["candidates_xlsx"] = export_candidates_to_excel(records, str(base))
+                written["candidates_xlsx"] = export_candidates_to_excel(records, str(xlsx_path))
             else:
-                written["xlsx"] = export_to_excel(records, str(base))
+                written["xlsx"] = export_to_excel(records, str(xlsx_path))
         except Exception as exc:  # export must not kill a finished run
             written["xlsx_error"] = str(exc)
 

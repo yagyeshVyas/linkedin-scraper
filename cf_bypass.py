@@ -924,7 +924,8 @@ async def wait_for_clearance(page, timeout: float = 15.0, poll: float = 0.5) -> 
 # ─────────────────────────────────────────────────────────────
 
 async def solve_challenge(page, timeout: float = 45.0, *, click_turnstile: bool = True,
-                          poll: float = 1.5) -> bool:
+                          poll: float = 1.5, solver=None,
+                          solver_timeout: float = 0.0) -> bool:
     """Wait for a Cloudflare/bot wall on ``page`` to clear.
 
     Signals, strongest first:
@@ -938,16 +939,35 @@ async def solve_challenge(page, timeout: float = 45.0, *, click_turnstile: bool 
        as success even if the document still looks walled.
     4. **Click** — up to three human-timed clicks inside the widget frame; a
        fresh bounce after each one.
+    5. **External solver** — when the DOM wait is exhausted and a solving
+       service is configured, hand the sitekey over, inject the returned token
+       into the page and submit. This is the only tier that answers a challenge
+       that is deliberately gated on a human.
     """
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + max(5.0, float(timeout))
+    active = solver
+    if active is None:
+        try:
+            from captcha_solver import default_solver
+            active = default_solver()
+        except Exception:
+            active = None
+    has_solver = bool(getattr(active, "configured", False))
+    # When a solver is armed, do not spend the whole budget waiting on a wall
+    # that is deliberately gated on a human — hand it over early instead.
+    wait = max(5.0, float(timeout))
+    if has_solver:
+        wait = min(wait, 25.0)
+    deadline = loop.time() + wait
     clicks = 0
     reloads = 0
+    last_challenge = Challenge(NONE)
     while loop.time() < deadline:
         html = await _safe_content(page)
         challenge = classify_page(getattr(page, "url", "") or "", html)
         if not challenge.hard:
             return True
+        last_challenge = challenge
 
         if await _turnstile_token(page):
             if reloads < 2:
@@ -971,7 +991,156 @@ async def solve_challenge(page, timeout: float = 45.0, *, click_turnstile: bool 
                 continue
 
         await asyncio.sleep(poll * random.uniform(0.8, 1.2))
+
+    return await _solver_rescue(page, last_challenge, active, solver_timeout)
+
+
+async def _solver_rescue(page, challenge, solver, solver_timeout: float = 0.0) -> bool:
+    """Last tier: ask an external service for a token and inject it.
+
+    Never raises — a missing key, a dead provider or a page without a sitekey
+    all degrade to ``False`` so the caller rotates identity as before.
+    """
+    if not challenge.hard:
+        return False
+    try:
+        from captcha_solver import default_solver
+    except Exception:
+        return False
+    active = solver if solver is not None else default_solver()
+    if not getattr(active, "configured", False):
+        return False
+
+    target = await _challenge_target(page)
+    if not target.get("sitekey"):
+        logger.debug("solver rescue skipped: no sitekey on the page")
+        return False
+
+    family = target.get("family") or _family_for(challenge.verdict)
+    timeout = float(solver_timeout or getattr(active, "timeout", 120.0) or 120.0)
+    logger.info("🧩 Handing %s challenge to %s (sitekey %.8s…, %.0fs)",
+                family, getattr(active, "provider", "solver"), target["sitekey"], timeout)
+
+    def _run() -> str:
+        return active.solve(family, target["sitekey"], target.get("url") or "",
+                            action=target.get("action") or "",
+                            cdata=target.get("cdata") or "")
+
+    try:
+        token = await asyncio.wait_for(asyncio.to_thread(_run), timeout=timeout + 15.0)
+    except Exception as exc:
+        logger.warning("captcha solver failed: %s: %s", type(exc).__name__, exc)
+        return False
+    if not token:
+        return False
+
+    if await _inject_token(page, family, token):
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+        if await _safe_reload(page):
+            await asyncio.sleep(random.uniform(0.8, 1.5))
+        if await _page_clean(page):
+            logger.info("✅ Solver token accepted — wall cleared.")
+            return True
+    # The token may already have been consumed by the widget callback even if
+    # the reload raced it; re-check once before declaring failure.
+    if await _page_clean(page):
+        return True
+    logger.warning("captcha token injected but the wall did not clear")
     return False
+
+
+def _family_for(verdict: str) -> str:
+    if verdict in (TURNSTILE, CLOUDFLARE):
+        return "turnstile"
+    return "recaptcha"
+
+
+async def _challenge_target(page) -> dict:
+    """Sitekey / family / action for the widget currently on the page."""
+    script = (
+        "() => {"
+        "  const pick = (sel) => document.querySelector(sel);"
+        "  const out = {family:'', sitekey:'', action:'', cdata:'', url:location.href};"
+        "  const nodes = Array.from(document.querySelectorAll('[data-sitekey]'));"
+        "  for (const node of nodes) {"
+        "    const key = node.getAttribute('data-sitekey') || '';"
+        "    if (!key) continue;"
+        "    const cls = (node.className || '') + ' ' + (node.id || '');"
+        "    out.sitekey = key;"
+        "    if (/turnstile|cf-/i.test(cls)) out.family = 'turnstile';"
+        "    else if (/h-captcha|hcaptcha/i.test(cls)) out.family = 'hcaptcha';"
+        "    else if (/g-recaptcha|recaptcha/i.test(cls)) out.family = 'recaptcha';"
+        "    out.action = node.getAttribute('data-action') || '';"
+        "    out.cdata = node.getAttribute('data-cdata') || '';"
+        "    if (out.family) break;"
+        "  }"
+        "  if (!out.sitekey) {"
+        "    const ts = pick('.cf-turnstile');"
+        "    if (ts) out.sitekey = ts.getAttribute('data-sitekey') || '';"
+        "  }"
+        "  if (out.sitekey && !out.family) out.family = 'turnstile';"
+        "  return out;"
+        "}"
+    )
+    try:
+        found = await page.evaluate(script)
+    except Exception:
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+async def _inject_token(page, family: str, token: str) -> bool:
+    """Write a solved token into every field the page might read, then submit."""
+    fields = {
+        "turnstile": ["cf-turnstile-response", "cf_chl_response"],
+        "recaptcha": ["g-recaptcha-response"],
+        "hcaptcha": ["h-captcha-response", "g-recaptcha-response"],
+    }.get(family, ["cf-turnstile-response"])
+    script = (
+        "() => {"
+        f"  const names = {json.dumps(fields)};"
+        f"  const token = {json.dumps(token)};"
+        "  let touched = 0;"
+        "  for (const name of names) {"
+        "    for (const node of document.querySelectorAll("
+        "        `input[name=\"${name}\"], textarea[name=\"${name}\"]`)) {"
+        "      node.value = token;"
+        "      node.innerHTML = token;"
+        "      node.dispatchEvent(new Event('input', {bubbles:true}));"
+        "      node.dispatchEvent(new Event('change', {bubbles:true}));"
+        "      touched += 1;"
+        "    }"
+        "  }"
+        "  try {"
+        "    if (window.turnstile && typeof window.turnstile.getResponse === 'function') {"
+        "      /* widget already owns its own state; nothing to force */"
+        "    }"
+        "  } catch (e) {}"
+        "  const form = document.querySelector('#challenge-form, form[action*=\"challenge\"],"
+        "    form[method=\"post\"]');"
+        "  if (form) {"
+        "    try {"
+        "      const btn = form.querySelector('button[type=\"submit\"], input[type=\"submit\"], button');"
+        "      if (btn) btn.click(); else if (form.requestSubmit) form.requestSubmit(); else form.submit();"
+        "    } catch (e) { try { form.submit(); } catch (e2) {} }"
+        "  }"
+        "  return touched;"
+        "}"
+    )
+    try:
+        touched = await page.evaluate(script)
+    except Exception as exc:
+        logger.debug("token injection failed: %s", exc)
+        return False
+    return bool(touched)
+
+
+async def _page_clean(page) -> bool:
+    try:
+        html = await page.content()
+    except Exception:
+        return False
+    return not classify_page(getattr(page, "url", "") or "", html).hard
 
 
 async def _safe_content(page) -> str:

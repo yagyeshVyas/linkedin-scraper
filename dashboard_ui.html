@@ -388,9 +388,17 @@
                 <div class="field"><label>Profiles / day</label><input id="fPerDay" type="number" min="0" placeholder="300 (config)"></div>
                 <div class="field"><label>Runtime (min)</label><input id="fRuntime" type="number" min="0" placeholder="180 (config)"></div>
                 <div class="field"><label>2FA wait (s)</label><input id="fChallenge" type="number" min="0" placeholder="0 = config"></div>
+                <div class="field"><label>Captcha solver</label><select id="fCaptchaProvider">
+                  <option value="">off (config)</option>
+                  <option value="capsolver">CapSolver</option>
+                  <option value="2captcha">2Captcha</option>
+                  <option value="anticaptcha">Anti-Captcha</option>
+                </select></div>
+                <div class="field"><label>Solver API key</label><input id="fCaptchaKey" type="password" placeholder="empty = env var"></div>
                 <div class="field full"><label>Formats</label><input id="fFormats" value="xlsx,csv,json,md,html"></div>
                 <div class="checks full">
                   <label class="check"><input type="checkbox" id="fSafe" checked> safe mode</label>
+                  <label class="check"><input type="checkbox" id="fNoLimits"> no limits</label>
                   <label class="check"><input type="checkbox" id="fHeadless"> headless</label>
                   <label class="check"><input type="checkbox" id="fDry"> dry run</label>
                   <label class="check"><input type="checkbox" id="fFresh"> ignore completed</label>
@@ -710,7 +718,9 @@ function runPayload(){
     formats:$("fFormats").value, headless:$("fHeadless").checked,
     dry_run:$("fDry").checked, fresh:$("fFresh").checked,
     no_db:$("fNoDb").checked, challenge_timeout:$("fChallenge").value,
-    safe_mode:$("fSafe").checked,
+    safe_mode:$("fSafe").checked, no_limits:$("fNoLimits").checked,
+    captcha_provider:$("fCaptchaProvider").value,
+    captcha_key:$("fCaptchaKey").value,
   };
   if (state.mode === "people"){
     Object.assign(payload, {

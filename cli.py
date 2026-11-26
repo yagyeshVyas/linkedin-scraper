@@ -67,6 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="seconds to wait for a 2FA/checkpoint page (0 = config)")
     run.add_argument("--unsafe", action="store_true",
                      help="disable account-safety budgets (not recommended)")
+    run.add_argument("--no-limits", action="store_true", dest="no_limits",
+                     help="disable every cap: safety budgets, page/query/profile "
+                          "ceilings and block-recovery budget")
+    # External CAPTCHA solving (Turnstile / reCAPTCHA / hCaptcha).
+    run.add_argument("--captcha-provider", default="",
+                     help="capsolver | 2captcha | anticaptcha (empty = config/env)")
+    run.add_argument("--captcha-key", default="",
+                     help="API key for the solving service (empty = config/env)")
     run.add_argument("--formats", default="",
                      help="export formats: xlsx,csv,json,jsonl,md,html (default: config)")
     run.add_argument("--no-export", action="store_true", help="skip exporting at the end")
@@ -224,6 +232,20 @@ def _cmd_list(value: str, fallback: List[str]) -> List[str]:
     return items or list(fallback or [])
 
 
+def _apply_no_limits(config) -> None:
+    """Lift every ceiling. The operator asked for no caps; honour it once."""
+    config.SAFE_MODE = False
+    for key in ("MAX_PAGES_PER_COMPANY", "MAX_JOB_PAGES", "MAX_CANDIDATE_PAGES",
+                "MAX_DAILY_SEARCHES", "MAX_BLOCK_RECOVERIES"):
+        setattr(config, key, 100_000)
+    config.MAX_PROFILES_PER_RUN = 0
+    config.RETRY_FAILED_PROFILES = True
+    for key in ("SAFETY_MAX_WALLS_PER_DAY", "SAFETY_MAX_PROFILES_PER_DAY",
+                "SAFETY_MAX_RUNTIME_MINUTES"):
+        setattr(config, key, 100_000)
+    config.SAFETY_COOLDOWN_SECONDS = 0
+
+
 def apply_run_limits(config, args) -> None:
     """Map the run's paging/budget flags onto ``config``. Mode-aware.
 
@@ -308,6 +330,21 @@ def cmd_run(args) -> int:
     if getattr(args, "unsafe", False):
         config.SAFE_MODE = False
         print("[run] WARNING: account safety budgets disabled (--unsafe)")
+    if getattr(args, "no_limits", False):
+        _apply_no_limits(config)
+        print("[run] WARNING: every cap disabled (--no-limits) — "
+              "no daily budget, no page ceiling, no recovery limit")
+    if getattr(args, "captcha_provider", ""):
+        config.CF_CAPTCHA_PROVIDER = args.captcha_provider.strip().lower()
+    if getattr(args, "captcha_key", ""):
+        config.CF_CAPTCHA_API_KEY = args.captcha_key.strip()
+    if getattr(args, "captcha_provider", "") or getattr(args, "captcha_key", ""):
+        try:
+            from captcha_solver import default_solver
+            solver = default_solver(refresh=True)
+            print(f"[run] {solver.describe()}")
+        except Exception as exc:
+            print(f"[run] captcha solver unavailable ({exc.__class__.__name__}: {exc})")
     if args.db:
         config.DATABASE_FILE = args.db
     if args.no_db:
@@ -816,6 +853,25 @@ def run_doctor(db_path: str = "output/scraper.db") -> List[dict]:
                                  + (f", {live} expired pruned" if live else "")))
         except Exception as exc:
             checks.append(_check("stealth:clearance", False,
+                                 f"{exc.__class__.__name__}: {exc}", level="warn"))
+
+        # External solver: the only tier that answers a human-gated challenge.
+        try:
+            from captcha_solver import solver_report
+            report = solver_report()
+            if report["configured"]:
+                balance = report.get("balance")
+                detail = report["describe"]
+                if balance is not None:
+                    detail += f", balance {balance:g}"
+                checks.append(_check("stealth:captcha", True, detail))
+            else:
+                checks.append(_check(
+                    "stealth:captcha", False,
+                    "not configured (set CAPSOLVER_API_KEY / TWOCAPTCHA_API_KEY "
+                    "or --captcha-key)", level="warn"))
+        except Exception as exc:
+            checks.append(_check("stealth:captcha", False,
                                  f"{exc.__class__.__name__}: {exc}", level="warn"))
     except Exception as exc:
         checks.append(_check("stealth", False, f"{exc.__class__.__name__}: {exc}", level="warn"))

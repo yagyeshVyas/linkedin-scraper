@@ -301,6 +301,12 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
 
 ## Gotchas
 
+- Tests must never touch live runtime state. Point `Config.SAFETY_LEDGER_FILE`,
+  `Config.SESSION_HEALTH_FILE` and `Config.LOG_FILE` at a temp dir (each suite has an
+  `_isolated_config()` helper for this). `test_dry_run_flow` used to increment the real
+  `output/safety.json` (runs += 4 per suite run, silently eating the account's daily budget)
+  and the cf/brutal/safety suites appended fake entries to `output/session_health.json`.
+  `test_scraper_fixes.py::test_dry_run_leaves_the_real_safety_ledger_alone` guards the ledger.
 - `python -m py_compile` writes `.pyc` files into `__pycache__`, which is TRACKED in git here
   (`.gitignore` only excludes `.aider*` plus the v6.0 runtime state). For syntax checks prefer
   in-process `ast.parse`, or run with `PYTHONDONTWRITEBYTECODE=1`.
@@ -381,6 +387,33 @@ Non-obvious knowledge about this repo that isn't recoverable from the code or do
   budget only broke the profile loop and the run kept loading searches to scrape nothing.
 - `test_webapp.py` grew to 23 tests (limit flags/budgets) and `test_scraper_fixes.py` has the
   adaptive-paging case. All seven suites must stay green.
+
+## External captcha solving (v7.6, 2026-11)
+
+- `captcha_solver.py` is the tier that *answers* a human-gated challenge instead of waiting
+  it out. Stdlib only, import-safe (no socket at import). Providers: `capsolver`
+  (best Turnstile), `2captcha`, `anticaptcha`; each speaks its own JSON/form protocol
+  through `_post_json` / `_post_form`, and every `solve_*` call is normalised to a token
+  string or `""`. `default_solver()` resolves config first, then env
+  (`CAPSOLVER_API_KEY` / `TWOCAPTCHA_API_KEY` / `ANTICAPTCHA_API_KEY`), and caches.
+- Wiring: `cf_bypass.solve_challenge()` now takes `solver` / `solver_timeout`. When a
+  solver is armed the DOM-wait budget is capped at 25 s (waiting out a wall that is
+  deliberately human-gated is waste), then `_solver_rescue()` extracts the sitekey via
+  `_challenge_target()`, solves in a worker thread (`asyncio.to_thread`), injects the
+  token through `_inject_token()` (every response field + the nearest challenge form) and
+  re-checks the page. Failure returns `False`, so the old rotate-identity path is intact.
+- The solver is *not* auto-enabled: empty provider/key means `configured == False` and
+  every call site behaves exactly as before. That is why the 57 pre-existing cf tests
+  still pass untouched.
+- `cli.py run --captcha-provider/--captcha-key` set the config and refresh the cached
+  solver; `--no-limits` (`_apply_no_limits`) sets `SAFE_MODE = False` and lifts every
+  ceiling (pages, daily searches, block recoveries, safety budgets, cooldown). `--unsafe`
+  remains the narrower "disable the seatbelt only" switch.
+- Dashboard: the Run panel has a solver `<select>`, a key field and a **no limits**
+  checkbox; `webapp.build_run_args` whitelists the three provider names and truncates the
+  key, so a crafted payload cannot inject arbitrary flags.
+- `cli.py doctor` reports `stealth:captcha` (provider + live balance) as a warn-level
+  check — an unconfigured solver is normal, not a failure.
 
 ## Dashboard preview
 

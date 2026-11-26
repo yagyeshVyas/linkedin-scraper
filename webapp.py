@@ -377,6 +377,14 @@ def build_run_args(payload: Dict[str, Any]) -> List[str]:
         args.append("--headless")
     if payload.get("safe_mode") is False:
         args.append("--unsafe")
+    if payload.get("no_limits"):
+        args.append("--no-limits")
+    provider = str(payload.get("captcha_provider") or "").strip().lower()[:20]
+    if provider in ("capsolver", "2captcha", "anticaptcha"):
+        args += ["--captcha-provider", provider]
+    captcha_key = str(payload.get("captcha_key") or "").strip()[:200]
+    if captcha_key:
+        args += ["--captcha-key", captcha_key]
     if payload.get("dry_run"):
         args.append("--dry-run")
     if payload.get("fresh"):

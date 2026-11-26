@@ -479,13 +479,29 @@ class _FakePage:
         return None
 
 
-def _scraper_with(page, **overrides):
-    from config import Config
-    from linkedin_scraper import LinkedInScraper
+def _isolated_config(**overrides):
+    """Config whose runtime artifacts land in a throwaway dir.
 
+    A suite must never write the live output/scraper.log, output/session_health.json
+    or output/safety.json: the ledger is the real account's daily budget and the
+    session-health file is real run history.
+    """
+    from config import Config
+
+    tmp = Path(tempfile.mkdtemp(prefix="li_test_"))
     config = Config()
+    config.LOG_FILE = str(tmp / "scraper.log")
+    config.SESSION_HEALTH_FILE = str(tmp / "session_health.json")
+    config.SAFETY_LEDGER_FILE = str(tmp / "safety.json")
     for key, value in overrides.items():
         setattr(config, key, value)
+    return config
+
+
+def _scraper_with(page, **overrides):
+    from linkedin_scraper import LinkedInScraper
+
+    config = _isolated_config(**overrides)
     config.USE_PERSISTENT_SESSION = False
     scraper = LinkedInScraper(config)
     scraper.page = page
@@ -751,6 +767,161 @@ def test_cli_doctor_reports_stealth():
     assert checks["agent-browser"]["ok"]
 
 
+# ─────────────────────────────────────────────────────────────
+#  v7.6: external CAPTCHA solving + no-limits mode
+# ─────────────────────────────────────────────────────────────
+
+def test_captcha_solver_unconfigured_is_a_noop():
+    import captcha_solver as cs
+
+    solver = cs.CaptchaSolver()
+    assert solver.configured is False
+    assert solver.solve_turnstile("0x4AAA", "https://x") == ""
+    assert "not configured" in solver.describe()
+
+
+def test_captcha_solver_capsolver_task_shape():
+    import captcha_solver as cs
+
+    calls = []
+
+    def fake_post(url, payload, timeout, headers=None):
+        calls.append((url, payload))
+        if url.endswith("createTask"):
+            return {"errorId": 0, "taskId": "task-1"}
+        return {"errorId": 0, "status": "ready", "solution": {"token": "solved"}}
+
+    saved = cs._post_json
+    cs._post_json = fake_post
+    try:
+        solver = cs.CaptchaSolver("capsolver", "KEY123", timeout=20, poll=1)
+        token = solver.solve_turnstile("0x4AAA", "https://target/x", action="login")
+    finally:
+        cs._post_json = saved
+
+    assert token == "solved"
+    create_url, create = calls[0]
+    assert create_url.endswith("/createTask")
+    assert create["clientKey"] == "KEY123"
+    assert create["task"]["type"] == "AntiTurnstileTaskProxyLess"
+    assert create["task"]["websiteKey"] == "0x4AAA"
+    assert create["task"]["metadata"]["action"] == "login"
+    assert calls[1][1]["taskId"] == "task-1"
+
+
+def test_captcha_solver_2captcha_task_shape():
+    import captcha_solver as cs
+
+    seen = []
+
+    def fake_form(url, fields, timeout):
+        seen.append(fields)
+        return {"status": 1, "request": "777"}
+
+    saved = cs._post_form
+    cs._post_form = fake_form
+    try:
+        solver = cs.CaptchaSolver("2captcha", "KEY", timeout=20)
+        task_id = solver._create_2captcha("turnstile", "0x4AAA", "https://target/x",
+                                          {"action": "login", "cdata": ""})
+    finally:
+        cs._post_form = saved
+
+    assert task_id == "777"
+    assert seen[0]["method"] == "turnstile"
+    assert seen[0]["sitekey"] == "0x4AAA"
+    assert seen[0]["action"] == "login"
+    assert seen[0]["json"] == "1"
+
+
+def test_solver_rescue_skips_a_page_without_a_sitekey():
+    class _Page(_FakePage):
+        async def evaluate(self, expression):
+            return {"family": "", "sitekey": "", "url": self.url}
+
+    page = _Page("https://x", CF_INTERSTITIAL)
+    solver = cs_stub()
+    assert asyncio.run(cf_bypass._solver_rescue(
+        page, Challenge(cf_bypass.CLOUDFLARE), solver)) is False
+    assert solver.calls == []
+
+
+class _SolverPage(_FakePage):
+    """Walled page that becomes clean the moment a token is injected."""
+
+    def __init__(self, url, html, target):
+        super().__init__(url, html)
+        self._target = target
+        self.injected = 0
+        self.reloads = 0
+
+    async def evaluate(self, expression):
+        if "data-sitekey" in expression:
+            return self._target
+        if "const names" in expression:
+            self.injected += 1
+            self._html = CLEAN_PAGE
+            return 1
+        return ""
+
+    async def reload(self, **kwargs):
+        self.reloads += 1
+        return None
+
+
+def cs_stub():
+    class _Stub:
+        configured = True
+        provider = "capsolver"
+        timeout = 5.0
+
+        def __init__(self):
+            self.calls = []
+
+        def solve(self, family, sitekey, url, **kwargs):
+            self.calls.append((family, sitekey, url))
+            return "solved-token"
+
+    return _Stub()
+
+
+def test_solver_rescue_injects_the_token_and_clears_the_wall():
+    target = {"family": "turnstile", "sitekey": "0x4AAA",
+              "url": "https://target/x", "action": "", "cdata": ""}
+    page = _SolverPage("https://target/x", CF_INTERSTITIAL, target)
+    solver = cs_stub()
+    assert asyncio.run(cf_bypass._solver_rescue(
+        page, Challenge(cf_bypass.CLOUDFLARE), solver)) is True
+    assert solver.calls == [("turnstile", "0x4AAA", "https://target/x")]
+    assert page.injected == 1
+
+
+def test_no_limits_disables_every_cap():
+    import cli
+    from config import Config
+
+    config = Config()
+    cli._apply_no_limits(config)
+    assert config.SAFE_MODE is False
+    for key in ("MAX_PAGES_PER_COMPANY", "MAX_JOB_PAGES", "MAX_CANDIDATE_PAGES",
+                "MAX_DAILY_SEARCHES", "MAX_BLOCK_RECOVERIES",
+                "SAFETY_MAX_WALLS_PER_DAY", "SAFETY_MAX_PROFILES_PER_DAY"):
+        assert getattr(config, key) >= 100_000, key
+    assert config.MAX_PROFILES_PER_RUN == 0
+    assert config.SAFETY_COOLDOWN_SECONDS == 0
+
+
+def test_cli_run_parser_exposes_captcha_and_no_limits_flags():
+    import cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(["run", "--no-limits", "--captcha-provider", "capsolver",
+                              "--captcha-key", "KEY"])
+    assert args.no_limits is True
+    assert args.captcha_provider == "capsolver"
+    assert args.captcha_key == "KEY"
+
+
 def main():
     tests = [
         test_import_is_light,
@@ -810,6 +981,13 @@ def main():
         test_cf_hardening_knobs_default_on,
         test_cli_has_browser_and_fetch_commands,
         test_cli_doctor_reports_stealth,
+        test_captcha_solver_unconfigured_is_a_noop,
+        test_captcha_solver_capsolver_task_shape,
+        test_captcha_solver_2captcha_task_shape,
+        test_solver_rescue_skips_a_page_without_a_sitekey,
+        test_solver_rescue_injects_the_token_and_clears_the_wall,
+        test_no_limits_disables_every_cap,
+        test_cli_run_parser_exposes_captcha_and_no_limits_flags,
     ]
     failed = 0
     for fn in tests:

@@ -315,6 +315,26 @@ class Config:
     CF_SOLVERR_URL: str = ""
     CF_ALLOW_FLARESOLVERR: bool = True
 
+    # ─────────────────────────────────────────────
+    #  🧩 EXTERNAL CAPTCHA SOLVING (v7.6)
+    #  The only tier that *answers* a human-gated challenge instead of
+    #  waiting it out.  Empty provider/key = tier disabled (old behaviour).
+    #  Providers: "capsolver", "2captcha", "anticaptcha".
+    #  Keys are also read from CAPSOLVER_API_KEY / TWOCAPTCHA_API_KEY /
+    #  ANTICAPTCHA_API_KEY, so the config can stay empty.
+    # ─────────────────────────────────────────────
+    CF_CAPTCHA_PROVIDER: str = ""
+    CF_CAPTCHA_API_KEY: str = ""
+    # How long one solve may take (Turnstile is usually 5-25s).
+    CF_CAPTCHA_SOLVE_TIMEOUT: int = 120
+    CF_CAPTCHA_POLL_SECONDS: float = 3.0
+    # Retries on a transient provider error (unsolvable / no slot).
+    CF_CAPTCHA_RETRIES: int = 1
+    # Optional self-hosted / reseller endpoint, e.g. "https://api.example.com".
+    CF_CAPTCHA_SERVICE_URL: str = ""
+    # Proxy handed to the solver for IP-bound challenges ("" = provider's own).
+    CF_CAPTCHA_PROXY: str = ""
+
     # Where the agent browser keeps its login state between MCP sessions.
     AGENT_BROWSER_STATE_DIR: str = "session/agent_browser"
 

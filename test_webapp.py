@@ -90,6 +90,19 @@ def test_build_run_args_limits_and_daily_budgets():
     assert "--runtime-minutes 240" in args
 
 
+def test_build_run_args_no_limits_and_captcha_solver():
+    args = " ".join(build_run_args({
+        "mode": "people", "no_limits": True,
+        "captcha_provider": "CapSolver", "captcha_key": "KEY123",
+    }))
+    assert "--no-limits" in args
+    assert "--captcha-provider capsolver" in args
+    assert "--captcha-key KEY123" in args
+
+    junk = " ".join(build_run_args({"mode": "people", "captcha_provider": "evil"}))
+    assert "--captcha-provider" not in junk, "unknown providers must be dropped"
+
+
 def test_cli_page_flag_follows_the_active_mode():
     import cli
     from config import Config
@@ -297,6 +310,7 @@ def main():
         test_build_run_args_rejects_unknown_mode,
         test_build_run_args_mode_specific_facets,
         test_build_run_args_limits_and_daily_budgets,
+        test_build_run_args_no_limits_and_captcha_solver,
         test_cli_page_flag_follows_the_active_mode,
         test_clean_int_clamps,
         test_clean_int_custom_range,
